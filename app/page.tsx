@@ -1,0 +1,970 @@
+"use client";
+
+import React, { useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import {
+  Activity,
+  ArrowRight,
+  BookOpen,
+  Check,
+  Copy,
+  CreditCard,
+  Database,
+  Eye,
+  EyeOff,
+  FileText,
+  Gauge,
+  KeyRound,
+  LogOut,
+  Menu,
+  Play,
+  Plus,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  User,
+  Wallet,
+  X,
+  Code2,
+  Server,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+
+type Page = "home" | "dashboard";
+type Tab =
+  | "overview"
+  | "keys"
+  | "playground"
+  | "models"
+  | "usage"
+  | "recharge"
+  | "orders"
+  | "docs"
+  | "admin";
+
+type ApiKeyItem = {
+  id: number;
+  name: string;
+  key: string;
+  createdAt: string;
+};
+
+type UsageItem = {
+  id: number;
+  time: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  cost: number;
+};
+
+type OrderItem = {
+  id: number;
+  time: string;
+  amount: number;
+  method: string;
+  status: string;
+};
+
+type ModelItem = {
+  name: string;
+  label: string;
+  provider: string;
+  inputPrice: string;
+  outputPrice: string;
+  inputPricePer1K: number;
+  outputPricePer1K: number;
+  desc: string;
+};
+
+const DEMO_CREATED_AT = "05/13 14:30";
+const DEMO_API_KEY = "sk-demo-EasyApiHubPreviewKey00000000000000000001";
+
+const modelList: ModelItem[] = [
+  {
+    name: "smart-chat",
+    label: "聪明模型",
+    provider: "GPT / Claude 优先",
+    inputPrice: "¥0.02 / 1K tokens",
+    outputPrice: "¥0.06 / 1K tokens",
+    inputPricePer1K: 0.02,
+    outputPricePer1K: 0.06,
+    desc: "适合写作、代码、复杂分析。",
+  },
+  {
+    name: "fast-chat",
+    label: "快速模型",
+    provider: "DeepSeek / Qwen 优先",
+    inputPrice: "¥0.005 / 1K tokens",
+    outputPrice: "¥0.015 / 1K tokens",
+    inputPricePer1K: 0.005,
+    outputPricePer1K: 0.015,
+    desc: "适合客服、聊天、轻量任务。",
+  },
+  {
+    name: "long-text",
+    label: "长文本模型",
+    provider: "Claude / Gemini 优先",
+    inputPrice: "¥0.03 / 1K tokens",
+    outputPrice: "¥0.08 / 1K tokens",
+    inputPricePer1K: 0.03,
+    outputPricePer1K: 0.08,
+    desc: "适合长文档、总结、长上下文。",
+  },
+  {
+    name: "cheap-chat",
+    label: "便宜模型",
+    provider: "Qwen / DeepSeek 优先",
+    inputPrice: "¥0.002 / 1K tokens",
+    outputPrice: "¥0.006 / 1K tokens",
+    inputPricePer1K: 0.002,
+    outputPricePer1K: 0.006,
+    desc: "适合批量任务和测试。",
+  },
+];
+
+const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
+  { key: "overview", label: "概览", icon: <Gauge className="h-4 w-4" /> },
+  { key: "keys", label: "API Key", icon: <KeyRound className="h-4 w-4" /> },
+  { key: "playground", label: "在线测试", icon: <Play className="h-4 w-4" /> },
+  { key: "models", label: "模型列表", icon: <Database className="h-4 w-4" /> },
+  { key: "usage", label: "用量记录", icon: <Activity className="h-4 w-4" /> },
+  { key: "recharge", label: "充值中心", icon: <CreditCard className="h-4 w-4" /> },
+  { key: "orders", label: "订单记录", icon: <FileText className="h-4 w-4" /> },
+  { key: "docs", label: "API 文档", icon: <BookOpen className="h-4 w-4" /> },
+  { key: "admin", label: "管理后台", icon: <Settings className="h-4 w-4" /> },
+];
+
+function nowText() {
+  return new Date().toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function createDemoKey() {
+  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let key = "sk-demo-";
+  for (let i = 0; i < 44; i += 1) {
+    key += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return key;
+}
+
+function SectionTitle({
+  label,
+  title,
+  desc,
+}: {
+  label: string;
+  title: string;
+  desc?: string;
+}) {
+  return (
+    <div className="mb-6">
+      <p className="text-sm font-semibold text-cyan-300">{label}</p>
+      <h2 className="mt-2 text-2xl font-black sm:text-3xl">{title}</h2>
+      {desc ? <p className="mt-3 text-slate-400">{desc}</p> : null}
+    </div>
+  );
+}
+
+export default function EasyApiHubPage() {
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [page, setPage] = useState<Page>("home");
+  const [dashboardTab, setDashboardTab] = useState<Tab>("overview");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [email, setEmail] = useState("demo@example.com");
+  const [balance, setBalance] = useState(18.66);
+  const [showKeys, setShowKeys] = useState(false);
+  const [copiedText, setCopiedText] = useState("");
+  const [selectedModel, setSelectedModel] = useState("smart-chat");
+  const [testPrompt, setTestPrompt] = useState("你好，帮我写一个 API 中转站介绍");
+  const [testResult, setTestResult] = useState(
+    "这里会显示模型回复。当前是本地演示版，不会真的请求上游 API。"
+  );
+  const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([
+    { id: 1, name: "默认密钥", key: DEMO_API_KEY, createdAt: DEMO_CREATED_AT },
+  ]);
+  const [usageLogs, setUsageLogs] = useState<UsageItem[]>([
+    {
+      id: 1,
+      time: DEMO_CREATED_AT,
+      model: "smart-chat",
+      promptTokens: 128,
+      completionTokens: 326,
+      cost: 0.0136,
+    },
+  ]);
+  const [orders, setOrders] = useState<OrderItem[]>([
+    { id: 10001, time: DEMO_CREATED_AT, amount: 10, method: "演示充值", status: "已完成" },
+  ]);
+
+  const activeKey = apiKeys[0]?.key || "你的_API_Key";
+  const selectedModelInfo =
+    modelList.find((model) => model.name === selectedModel) ?? modelList[0];
+
+  const code = useMemo(() => {
+    return `from openai import OpenAI
+
+client = OpenAI(
+    api_key="${activeKey}",
+    base_url="https://api.yourdomain.com/v1"
+)
+
+response = client.chat.completions.create(
+    model="${selectedModel}",
+    messages=[
+        {"role": "user", "content": "你好，帮我写一个网站标题"}
+    ]
+)
+
+print(response.choices[0].message.content)`;
+  }, [activeKey, selectedModel]);
+
+  const showCopyMessage = (message: string) => {
+    if (copyTimer.current) {
+      clearTimeout(copyTimer.current);
+    }
+
+    setCopiedText(message);
+    copyTimer.current = setTimeout(() => setCopiedText(""), 1500);
+  };
+
+  const copy = async (text: string, label = "已复制") => {
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("Clipboard API is unavailable");
+      }
+
+      await navigator.clipboard.writeText(text);
+      showCopyMessage(label);
+    } catch {
+      showCopyMessage("复制失败，请手动复制");
+    }
+  };
+
+  const openDashboard = () => {
+    if (!loggedIn) {
+      setLoginOpen(true);
+      return;
+    }
+    setPage("dashboard");
+  };
+
+  const login = () => {
+    setLoggedIn(true);
+    setLoginOpen(false);
+    setPage("dashboard");
+  };
+
+  const addApiKey = () => {
+    setApiKeys((items) => [
+      {
+        id: Date.now(),
+        name: `项目密钥 ${items.length + 1}`,
+        key: createDemoKey(),
+        createdAt: nowText(),
+      },
+      ...items,
+    ]);
+  };
+
+  const runTest = () => {
+    const promptTokens = Math.max(20, Math.round(testPrompt.length * 1.8));
+    const completionTokens = Math.floor(120 + Math.random() * 260);
+    const cost = Number(
+      (
+        (promptTokens / 1000) * selectedModelInfo.inputPricePer1K +
+        (completionTokens / 1000) * selectedModelInfo.outputPricePer1K
+      ).toFixed(4)
+    );
+    const total = promptTokens + completionTokens;
+
+    setBalance((value) => Number(Math.max(0, value - cost).toFixed(4)));
+    setTestResult(
+      `演示回复：你的请求已通过 ${selectedModel} 处理。\n\n这是本地模拟结果。以后接入真实上游 API Key 后，这里就会返回真实 AI 回复。\n\nTokens：${total}\n模拟费用：¥${cost.toFixed(4)}`
+    );
+    setUsageLogs((logs) => [
+      {
+        id: Date.now(),
+        time: nowText(),
+        model: selectedModel,
+        promptTokens,
+        completionTokens,
+        cost,
+      },
+      ...logs,
+    ]);
+  };
+
+  const recharge = (amount: number) => {
+    setBalance((value) => Number((value + amount).toFixed(2)));
+    setOrders((items) => [
+      {
+        id: Date.now(),
+        time: nowText(),
+        amount,
+        method: "本地演示充值",
+        status: "已完成",
+      },
+      ...items,
+    ]);
+  };
+
+  const LoginDialog = loginOpen ? (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4">
+      <Card className="w-full max-w-md rounded-3xl border-white/10 bg-slate-900 text-white shadow-2xl">
+        <CardContent className="p-6">
+          <div className="mb-5 flex items-center justify-between">
+            <h2 className="text-2xl font-bold">登录控制台</h2>
+            <button onClick={() => setLoginOpen(false)}>
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+          <label className="text-sm text-slate-300">邮箱</label>
+          <input
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+          />
+          <label className="mt-4 block text-sm text-slate-300">密码</label>
+          <input
+            type="password"
+            value="demo-only"
+            readOnly
+            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+          />
+          <p className="mt-3 text-xs text-slate-400">本地演示版，不校验密码；生产环境需要接入真实鉴权。</p>
+          <Button onClick={login} className="mt-5 w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+            登录 / 注册
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  ) : null;
+
+  if (page === "dashboard") {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white">
+        <div className="pointer-events-none fixed inset-0 overflow-hidden">
+          <div className="absolute left-1/2 top-0 h-96 w-96 -translate-x-1/2 rounded-full bg-cyan-500/20 blur-3xl" />
+          <div className="absolute bottom-24 right-10 h-80 w-80 rounded-full bg-violet-500/20 blur-3xl" />
+        </div>
+
+        <header className="relative z-10 border-b border-white/10 bg-slate-950/75 backdrop-blur-xl">
+          <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+            <button onClick={() => setPage("home")} className="flex items-center gap-2">
+              <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white text-slate-950">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <span className="text-lg font-bold">EasyAPI Hub</span>
+            </button>
+            <div className="flex items-center gap-3">
+              <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300 sm:flex">
+                <User className="h-4 w-4" />
+                {email}
+              </div>
+              <Button
+                variant="ghost"
+                className="text-slate-200 hover:bg-white/10 hover:text-white"
+                onClick={() => {
+                  setLoggedIn(false);
+                  setPage("home");
+                }}
+              >
+                <LogOut className="mr-2 h-4 w-4" />
+                退出
+              </Button>
+            </div>
+          </div>
+        </header>
+
+        <main className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+          <div className="mb-8">
+            <p className="text-sm font-semibold text-cyan-300">控制台</p>
+            <h1 className="mt-2 text-3xl font-black sm:text-5xl">API 管理后台</h1>
+            <p className="mt-4 text-slate-300">这是本地演示版：功能能点能用，数据存在浏览器内存，刷新页面会重置。</p>
+          </div>
+
+          <div className="mb-8 flex flex-wrap gap-3">
+            {tabs.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setDashboardTab(tab.key)}
+                className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition ${
+                  dashboardTab === tab.key
+                    ? "bg-white text-slate-950"
+                    : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                {tab.icon}
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {copiedText ? (
+            <div className="mb-5 rounded-2xl border border-emerald-300/20 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-200">
+              {copiedText}
+            </div>
+          ) : null}
+
+          {dashboardTab === "overview" ? (
+            <div>
+              <SectionTitle label="Overview" title="平台概览" desc="查看余额、请求数、密钥数量和模型数量。" />
+              <div className="grid gap-4 md:grid-cols-4">
+                {[
+                  ["当前余额", `¥${balance.toFixed(4)}`, <Wallet key="wallet" className="h-5 w-5" />],
+                  ["API Key 数量", String(apiKeys.length), <KeyRound key="key" className="h-5 w-5" />],
+                  ["今日请求", String(usageLogs.length), <Activity key="activity" className="h-5 w-5" />],
+                  ["可用模型", String(modelList.length), <Database key="db" className="h-5 w-5" />],
+                ].map(([label, value, icon]) => (
+                  <Card key={String(label)} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                    <CardContent className="p-5">
+                      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-2xl bg-white text-slate-950">
+                        {icon}
+                      </div>
+                      <p className="text-sm text-slate-400">{label}</p>
+                      <p className="mt-2 text-2xl font-bold">{value}</p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {dashboardTab === "keys" ? (
+            <div>
+              <SectionTitle label="API Key" title="密钥管理" desc="创建、复制、显示、隐藏和删除你的接口密钥。" />
+              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                    <Button
+                      onClick={() => setShowKeys(!showKeys)}
+                      variant="outline"
+                      className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10"
+                    >
+                      {showKeys ? <EyeOff className="mr-2 h-4 w-4" /> : <Eye className="mr-2 h-4 w-4" />}
+                      {showKeys ? "隐藏密钥" : "显示密钥"}
+                    </Button>
+                    <Button onClick={addApiKey} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                      <Plus className="mr-2 h-4 w-4" />
+                      新建 API Key
+                    </Button>
+                  </div>
+                  <div className="space-y-3">
+                    {apiKeys.map((item) => (
+                      <div key={item.id} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-semibold">{item.name}</p>
+                            <p className="mt-1 break-all font-mono text-xs text-slate-400">
+                              {showKeys ? item.key : `${item.key.slice(0, 13)}********************************`}
+                            </p>
+                            <p className="mt-2 text-xs text-slate-500">创建时间：{item.createdAt}</p>
+                          </div>
+                          <div className="flex shrink-0 gap-2">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => copy(item.key, "已复制 API Key")}
+                              className="hover:bg-white/10 hover:text-white"
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setApiKeys((items) => items.filter((key) => key.id !== item.id))}
+                              className="hover:bg-red-500/15 hover:text-red-200"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    {apiKeys.length === 0 ? (
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">还没有 API Key，请点击新建。</div>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
+
+          {dashboardTab === "playground" ? (
+            <div>
+              <SectionTitle label="Playground" title="在线测试台" desc="当前是本地模拟请求，买完 API Key 后可以接真实模型。" />
+              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <label className="text-sm text-slate-300">选择模型</label>
+                  <select
+                    value={selectedModel}
+                    onChange={(event) => setSelectedModel(event.target.value)}
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                  >
+                    {modelList.map((model) => (
+                      <option key={model.name} value={model.name}>
+                        {model.name} - {model.label}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="mt-4 block text-sm text-slate-300">输入内容</label>
+                  <textarea
+                    value={testPrompt}
+                    onChange={(event) => setTestPrompt(event.target.value)}
+                    className="mt-2 min-h-28 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                  />
+                  <Button onClick={runTest} className="mt-4 rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                    <Play className="mr-2 h-4 w-4" />
+                    发送测试
+                  </Button>
+                  <pre className="mt-4 whitespace-pre-wrap rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 text-slate-200">
+                    {testResult}
+                  </pre>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
+
+          {dashboardTab === "models" ? (
+            <div>
+              <SectionTitle label="Models" title="模型列表" desc="这里展示对外模型别名、价格和路由说明。" />
+              <div className="grid gap-4 lg:grid-cols-2">
+                {modelList.map((model) => (
+                  <Card key={model.name} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                    <CardContent className="p-6">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-mono text-sm text-cyan-300">{model.name}</p>
+                          <h3 className="mt-2 text-xl font-bold">{model.label}</h3>
+                          <p className="mt-2 text-sm text-slate-400">{model.provider}</p>
+                          <p className="mt-3 text-slate-300">{model.desc}</p>
+                        </div>
+                        <span className="rounded-full bg-emerald-400/15 px-3 py-1 text-xs text-emerald-300">正常</span>
+                      </div>
+                      <div className="mt-4 grid gap-2 text-sm text-slate-400 sm:grid-cols-2">
+                        <span>输入：{model.inputPrice}</span>
+                        <span>输出：{model.outputPrice}</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {dashboardTab === "usage" ? (
+            <div>
+              <SectionTitle label="Usage" title="用量记录" desc="显示每次调用的模型、tokens 和模拟费用。" />
+              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[580px] text-left text-sm">
+                      <thead className="text-slate-400">
+                        <tr className="border-b border-white/10">
+                          <th className="py-3">时间</th>
+                          <th className="py-3">模型</th>
+                          <th className="py-3">输入</th>
+                          <th className="py-3">输出</th>
+                          <th className="py-3">费用</th>
+                          <th className="py-3">状态</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {usageLogs.map((log) => (
+                          <tr key={log.id} className="border-b border-white/5">
+                            <td className="py-3 text-slate-300">{log.time}</td>
+                            <td className="py-3 font-mono text-cyan-300">{log.model}</td>
+                            <td className="py-3 text-slate-300">{log.promptTokens}</td>
+                            <td className="py-3 text-slate-300">{log.completionTokens}</td>
+                            <td className="py-3 text-slate-300">¥{log.cost.toFixed(4)}</td>
+                            <td className="py-3 text-emerald-300">成功</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
+
+          {dashboardTab === "recharge" ? (
+            <div>
+              <SectionTitle label="Recharge" title="充值中心" desc="本地演示充值，会增加余额并生成订单。" />
+              <div className="grid gap-4 md:grid-cols-4">
+                {[10, 50, 100, 500].map((amount) => (
+                  <Card key={amount} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                    <CardContent className="p-6">
+                      <p className="text-sm text-slate-400">充值金额</p>
+                      <p className="mt-3 text-3xl font-black">¥{amount}</p>
+                      <Button onClick={() => recharge(amount)} className="mt-5 w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                        模拟充值
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {dashboardTab === "orders" ? (
+            <div>
+              <SectionTitle label="Orders" title="订单记录" desc="显示本地演示充值生成的订单。" />
+              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[520px] text-left text-sm">
+                      <thead className="text-slate-400">
+                        <tr className="border-b border-white/10">
+                          <th className="py-3">订单号</th>
+                          <th className="py-3">时间</th>
+                          <th className="py-3">金额</th>
+                          <th className="py-3">方式</th>
+                          <th className="py-3">状态</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orders.map((order) => (
+                          <tr key={order.id} className="border-b border-white/5">
+                            <td className="py-3 text-slate-300">{order.id}</td>
+                            <td className="py-3 text-slate-300">{order.time}</td>
+                            <td className="py-3 text-slate-300">¥{order.amount}</td>
+                            <td className="py-3 text-slate-300">{order.method}</td>
+                            <td className="py-3 text-emerald-300">{order.status}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
+
+          {dashboardTab === "docs" ? (
+            <div>
+              <SectionTitle label="Docs" title="API 文档" desc="给用户复制 base_url、API Key 和接入代码。" />
+              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div className="rounded-2xl bg-slate-950/60 p-4">
+                      <p className="text-sm text-slate-400">Base URL</p>
+                      <p className="mt-2 break-all font-mono text-cyan-300">https://api.yourdomain.com/v1</p>
+                    </div>
+                    <div className="rounded-2xl bg-slate-950/60 p-4">
+                      <p className="text-sm text-slate-400">模型名</p>
+                      <p className="mt-2 font-mono text-cyan-300">{selectedModel}</p>
+                    </div>
+                    <div className="rounded-2xl bg-slate-950/60 p-4">
+                      <p className="text-sm text-slate-400">接口</p>
+                      <p className="mt-2 font-mono text-cyan-300">/chat/completions</p>
+                    </div>
+                  </div>
+                  <div className="mt-6 flex items-center justify-between gap-3">
+                    <h3 className="text-lg font-bold">Python 示例</h3>
+                    <Button onClick={() => copy(code, "已复制接入代码")} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                      <Copy className="mr-2 h-4 w-4" />
+                      复制
+                    </Button>
+                  </div>
+                  <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/80 p-5 text-sm leading-7 text-slate-200">
+                    <code>{code}</code>
+                  </pre>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
+
+          {dashboardTab === "admin" ? (
+            <div>
+              <SectionTitle label="Admin" title="管理后台" desc="本地演示版后台，用来展示未来管理员能操作的功能。" />
+              <div className="grid gap-4 md:grid-cols-3">
+                {[
+                  "用户管理",
+                  "模型价格管理",
+                  "供应商线路",
+                  "财务统计",
+                  "异常请求",
+                  "系统监控",
+                ].map((item) => (
+                  <Card key={item} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                    <CardContent className="p-6">
+                      <Settings className="mb-4 h-6 w-6 text-cyan-300" />
+                      <h3 className="text-lg font-bold">{item}</h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-400">当前是页面占位，后续接数据库和后端接口后可真实管理。</p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </main>
+      </div>
+    );
+  }
+
+  const navItems = ["功能", "模型", "价格", "接入代码", "安全"];
+  const features = [
+    {
+      icon: <KeyRound className="h-5 w-5" />,
+      title: "一键创建 API Key",
+      desc: "新手登录后即可生成密钥，支持限额、模型权限和 IP 白名单。",
+    },
+    {
+      icon: <Server className="h-5 w-5" />,
+      title: "统一模型网关",
+      desc: "兼容 OpenAI SDK，统一调用 OpenAI、Claude、Gemini、DeepSeek、Qwen。",
+    },
+    {
+      icon: <Wallet className="h-5 w-5" />,
+      title: "余额与用量明细",
+      desc: "按 token 计费，清楚展示每次请求的模型、消耗、延迟和状态。",
+    },
+    {
+      icon: <Gauge className="h-5 w-5" />,
+      title: "自动路由与重试",
+      desc: "根据延迟、失败率、成本和状态自动选择更稳定的上游线路。",
+    },
+    {
+      icon: <ShieldCheck className="h-5 w-5" />,
+      title: "隐私保护默认开启",
+      desc: "默认不保存完整 prompt 和 response，只保留必要计费与错误信息。",
+    },
+    {
+      icon: <Activity className="h-5 w-5" />,
+      title: "实时监控后台",
+      desc: "管理员可查看 QPS、错误率、成本、收入、模型状态和异常用户。",
+    },
+  ];
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white">
+      {LoginDialog}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute left-1/2 top-0 h-96 w-96 -translate-x-1/2 rounded-full bg-cyan-500/20 blur-3xl" />
+        <div className="absolute bottom-24 right-10 h-80 w-80 rounded-full bg-violet-500/20 blur-3xl" />
+      </div>
+
+      <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/75 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+          <a href="#" className="flex items-center gap-2">
+            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white text-slate-950">
+              <Sparkles className="h-5 w-5" />
+            </div>
+            <span className="text-lg font-bold">EasyAPI Hub</span>
+          </a>
+          <nav className="hidden items-center gap-8 md:flex">
+            {navItems.map((item) => (
+              <a key={item} href={`#${item}`} className="text-sm text-slate-300 hover:text-white">
+                {item}
+              </a>
+            ))}
+          </nav>
+          <div className="hidden items-center gap-3 md:flex">
+            <Button variant="ghost" onClick={() => setLoginOpen(true)} className="text-slate-200 hover:bg-white/10 hover:text-white">
+              登录
+            </Button>
+            <Button onClick={openDashboard} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+              打开控制台
+            </Button>
+          </div>
+          <button className="md:hidden" onClick={() => setMenuOpen(!menuOpen)}>
+            {menuOpen ? <X /> : <Menu />}
+          </button>
+        </div>
+        {menuOpen ? (
+          <div className="border-t border-white/10 px-4 py-4 md:hidden">
+            <div className="flex flex-col gap-4">
+              {navItems.map((item) => (
+                <a key={item} href={`#${item}`} className="text-sm text-slate-300" onClick={() => setMenuOpen(false)}>
+                  {item}
+                </a>
+              ))}
+              <Button onClick={openDashboard} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                打开控制台
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </header>
+
+      <main className="relative z-10">
+        <section className="mx-auto grid max-w-7xl items-center gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:px-8 lg:py-28">
+          <motion.div initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
+            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-cyan-200">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              兼容 OpenAI SDK 的 AI API 聚合网关
+            </div>
+            <h1 className="max-w-3xl text-4xl font-black tracking-tight sm:text-6xl">
+              让新手也能轻松接入
+              <span className="block bg-gradient-to-r from-cyan-300 to-violet-300 bg-clip-text text-transparent">多模型 API 中转站</span>
+            </h1>
+            <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-300">
+              EasyAPI Hub 提供统一 Base URL、统一 API Key、统一账单和统一模型路由。用户只需要改一行配置，就能调用主流 AI 模型。
+            </p>
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <Button size="lg" onClick={() => setLoginOpen(true)} className="rounded-2xl bg-white px-7 text-slate-950 hover:bg-slate-200">
+                立即免费试用 <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
+              <Button size="lg" onClick={openDashboard} variant="outline" className="rounded-2xl border-white/15 bg-white/5 px-7 text-white hover:bg-white/10">
+                打开控制台
+              </Button>
+            </div>
+          </motion.div>
+
+          <motion.div initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.6, delay: 0.1 }}>
+            <Card className="overflow-hidden rounded-3xl border-white/10 bg-white/10 shadow-2xl backdrop-blur-xl">
+              <CardContent className="p-0">
+                <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+                  <div>
+                    <p className="text-sm font-semibold text-white">实时请求监控</p>
+                    <p className="text-xs text-slate-400">API Gateway / Live Overview</p>
+                  </div>
+                  <span className="rounded-full bg-emerald-400/15 px-3 py-1 text-xs text-emerald-300">正常运行</span>
+                </div>
+                <div className="grid gap-4 p-5 sm:grid-cols-2">
+                  {[
+                    ["今日请求", "128,430"],
+                    ["平均延迟", "1.24s"],
+                    ["成功率", "99.82%"],
+                    ["今日收入", "¥3,284"],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                      <p className="text-sm text-slate-400">{label}</p>
+                      <p className="mt-2 text-2xl font-bold text-white">{value}</p>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        </section>
+
+        <section id="功能" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+          <SectionTitle label="核心功能" title="不是简单转发，而是完整 API 网关" desc="从用户注册、密钥管理、模型路由、计费扣费到日志监控，一套系统直接跑起来。" />
+          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+            {features.map((feature) => (
+              <Card key={feature.title} className="rounded-3xl border-white/10 bg-white/[0.06] text-white transition hover:bg-white/[0.09]">
+                <CardContent className="p-6">
+                  <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-slate-950">
+                    {feature.icon}
+                  </div>
+                  <h3 className="text-lg font-bold">{feature.title}</h3>
+                  <p className="mt-3 leading-7 text-slate-300">{feature.desc}</p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </section>
+
+        <section id="模型" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-6 sm:p-8">
+            <SectionTitle label="模型别名" title="让小白不用记复杂模型名" />
+            <div className="grid gap-4 lg:grid-cols-4">
+              {modelList.map((model) => (
+                <div key={model.name} className="rounded-2xl border border-white/10 bg-slate-950/60 p-5">
+                  <p className="font-mono text-sm text-cyan-300">{model.name}</p>
+                  <h3 className="mt-3 text-xl font-bold">{model.label}</h3>
+                  <p className="mt-2 text-sm text-slate-400">{model.provider}</p>
+                  <p className="mt-4 leading-7 text-slate-300">{model.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="价格" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+          <div className="mb-10 text-center">
+            <p className="text-sm font-semibold text-cyan-300">价格方案</p>
+            <h2 className="mt-3 text-3xl font-bold sm:text-4xl">充值按量扣费，账单清清楚楚</h2>
+          </div>
+          <div className="grid gap-5 lg:grid-cols-3">
+            {[
+              ["体验版", "¥0", "适合新手测试接口", ["赠送少量测试额度", "基础模型可用", "在线测试台", "社区支持"]],
+              ["开发者版", "按量计费", "适合个人开发和小项目", ["完整 API Key 管理", "用量明细", "更高并发", "模型自动切换"]],
+              ["团队版", "定制", "适合团队和企业项目", ["团队余额", "成员权限", "专属线路", "账单导出"]],
+            ].map(([name, price, desc, items], index) => (
+              <Card key={String(name)} className={`rounded-3xl text-white ${index === 1 ? "border-cyan-300/50 bg-cyan-300/10" : "border-white/10 bg-white/[0.06]"}`}>
+                <CardContent className="p-7">
+                  <h3 className="text-xl font-bold">{String(name)}</h3>
+                  <p className="mt-2 text-slate-300">{String(desc)}</p>
+                  <div className="mt-6 text-4xl font-black">{String(price)}</div>
+                  <ul className="mt-6 space-y-3">
+                    {(items as string[]).map((item) => (
+                      <li key={item} className="flex items-center gap-3 text-slate-200">
+                        <Check className="h-4 w-4 text-emerald-300" />
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                  <Button onClick={openDashboard} className={`mt-7 w-full rounded-2xl ${index === 1 ? "bg-white text-slate-950 hover:bg-slate-200" : "bg-white/10 text-white hover:bg-white/15"}`}>
+                    开始使用
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </section>
+
+        <section id="接入代码" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+          <div className="grid gap-8 lg:grid-cols-2 lg:items-center">
+            <div>
+              <SectionTitle label="接入代码" title="只改 base_url，即可开始调用" desc="平台兼容 OpenAI SDK。用户原来怎么调用 OpenAI，现在就怎么调用 EasyAPI Hub。" />
+            </div>
+            <Card className="overflow-hidden rounded-3xl border-white/10 bg-slate-900 text-white">
+              <CardContent className="p-0">
+                <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+                  <div className="flex items-center gap-2 text-sm text-slate-300">
+                    <Code2 className="h-4 w-4" /> Python 示例
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => copy(code, "已复制接入代码")} className="text-slate-300 hover:bg-white/10 hover:text-white">
+                    <Copy className="mr-2 h-4 w-4" />复制
+                  </Button>
+                </div>
+                <pre className="overflow-x-auto p-5 text-sm leading-7 text-slate-200">
+                  <code>{code}</code>
+                </pre>
+              </CardContent>
+            </Card>
+          </div>
+        </section>
+
+        <section id="安全" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+          <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 to-white/[0.03] p-8 sm:p-10">
+            <div className="grid gap-8 lg:grid-cols-2 lg:items-center">
+              <div>
+                <SectionTitle
+                  label="安全与合规"
+                  title="生产版安全规划"
+                  desc="当前页面是本地演示版；正式上线前需要补齐鉴权、密钥存储、限流、审计和告警。"
+                />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {["API Key 哈希保存", "上游 Key 加密存储", "默认不保存对话内容", "Redis 限流防刷", "Cloudflare WAF 防护", "异常消费自动提醒"].map((item) => (
+                  <div key={item} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                    <Check className="h-5 w-5 text-emerald-300" />
+                    <span className="text-slate-200">生产版：{item}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="relative z-10 border-t border-white/10 px-4 py-8 text-center text-sm text-slate-400 sm:px-6 lg:px-8">
+        © 2026 EasyAPI Hub. Built for developers and beginners.
+      </footer>
+    </div>
+  );
+}
