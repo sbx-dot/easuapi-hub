@@ -24,8 +24,12 @@ create table if not exists public.orders (
   amount numeric not null,
   method text not null,
   status text not null default 'pending',
+  note text,
   created_at timestamptz not null default now()
 );
+
+alter table public.orders
+add column if not exists note text;
 
 create table if not exists public.usage_logs (
   id uuid primary key default gen_random_uuid(),
@@ -59,6 +63,75 @@ grant insert (user_id, name, key_prefix, key_hash) on table public.api_keys to a
 grant update (revoked) on table public.api_keys to authenticated;
 grant select on table public.orders to authenticated;
 grant select on table public.usage_logs to authenticated;
+
+drop function if exists public.manual_recharge(text, numeric, text);
+create or replace function public.manual_recharge(
+  target_email text,
+  recharge_amount numeric,
+  recharge_note text default null
+)
+returns table (
+  order_id uuid,
+  user_id uuid,
+  email text,
+  new_balance numeric,
+  amount numeric,
+  note text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  actor_role text;
+  target_profile public.profiles%rowtype;
+  inserted_order public.orders%rowtype;
+begin
+  select role
+  into actor_role
+  from public.profiles
+  where id = auth.uid();
+
+  if actor_role is distinct from 'admin' then
+    raise exception 'Only admins can manually recharge users';
+  end if;
+
+  if recharge_amount is null or recharge_amount <= 0 then
+    raise exception 'Recharge amount must be greater than 0';
+  end if;
+
+  select *
+  into target_profile
+  from public.profiles
+  where lower(email) = lower(trim(target_email))
+  limit 1;
+
+  if target_profile.id is null then
+    raise exception 'User profile not found for email %', target_email;
+  end if;
+
+  update public.profiles
+  set balance = balance + recharge_amount
+  where id = target_profile.id
+  returning * into target_profile;
+
+  insert into public.orders (user_id, amount, method, status, note)
+  values (target_profile.id, recharge_amount, 'manual', 'paid', nullif(trim(recharge_note), ''))
+  returning * into inserted_order;
+
+  return query
+  select
+    inserted_order.id,
+    target_profile.id,
+    target_profile.email,
+    target_profile.balance,
+    inserted_order.amount,
+    inserted_order.note;
+end;
+$$;
+
+revoke all on function public.manual_recharge(text, numeric, text) from public;
+grant execute on function public.manual_recharge(text, numeric, text) to authenticated;
 
 drop policy if exists "Users can read own profile" on public.profiles;
 create policy "Users can read own profile"
@@ -129,3 +202,8 @@ select id, email, 0, 'user', created_at
 from auth.users
 on conflict (id) do update
 set email = excluded.email;
+
+-- After running this file, promote your own account in Supabase SQL Editor:
+-- update public.profiles
+-- set role = 'admin'
+-- where lower(email) = lower('your-email@example.com');

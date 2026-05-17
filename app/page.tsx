@@ -93,6 +93,7 @@ type OrderRow = {
   amount: number | string | null;
   method: string | null;
   status: string | null;
+  note: string | null;
   created_at: string;
 };
 
@@ -104,6 +105,15 @@ type UsageLogRow = {
   cost: number | string | null;
   status: string | null;
   created_at: string;
+};
+
+type ManualRechargeResult = {
+  order_id: string;
+  user_id: string;
+  email: string;
+  new_balance: number | string;
+  amount: number | string;
+  note: string | null;
 };
 
 type ModelItem = {
@@ -214,7 +224,7 @@ function mapOrder(row: OrderRow): OrderItem {
     id: row.id,
     time: formatDateTime(row.created_at),
     amount: Number(row.amount ?? 0),
-    method: row.method ?? "未知",
+    method: row.note ? `${row.method ?? "未知"} / ${row.note}` : row.method ?? "未知",
     status: row.status ?? "pending",
   };
 }
@@ -263,6 +273,12 @@ export default function EasyApiHubPage() {
   const [dataLoading, setDataLoading] = useState(false);
   const [dataMessage, setDataMessage] = useState("");
   const [createdApiKey, setCreatedApiKey] = useState("");
+  const [profileRole, setProfileRole] = useState("user");
+  const [manualRechargeEmail, setManualRechargeEmail] = useState("");
+  const [manualRechargeAmount, setManualRechargeAmount] = useState("");
+  const [manualRechargeNote, setManualRechargeNote] = useState("");
+  const [manualRechargeSubmitting, setManualRechargeSubmitting] = useState(false);
+  const [manualRechargeMessage, setManualRechargeMessage] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [balance, setBalance] = useState(0);
@@ -279,6 +295,9 @@ export default function EasyApiHubPage() {
 
   const activeKey = apiKeys[0]?.oneTimeKey ?? (apiKeys[0] ? `${apiKeys[0].keyPrefix}...` : "你的_API_Key");
   const userEmail = session?.user.email ?? email;
+  const isAdmin = profileRole === "admin";
+  const visibleTabs = tabs.filter((tab) => tab.key !== "admin" || isAdmin);
+  const activeDashboardTab = !isAdmin && dashboardTab === "admin" ? "overview" : dashboardTab;
   const selectedModelInfo =
     modelList.find((model) => model.name === selectedModel) ?? modelList[0];
 
@@ -307,6 +326,11 @@ print(response.choices[0].message.content)`;
     setUsageLogs([]);
     setCreatedApiKey("");
     setDataMessage("");
+    setProfileRole("user");
+    setManualRechargeEmail("");
+    setManualRechargeAmount("");
+    setManualRechargeNote("");
+    setManualRechargeMessage("");
   }, []);
 
   const loadDashboardData = useCallback(async (nextSession: Session) => {
@@ -336,7 +360,7 @@ print(response.choices[0].message.content)`;
             .order("created_at", { ascending: false }),
           supabase
             .from("orders")
-            .select("id,amount,method,status,created_at")
+            .select("id,amount,method,status,note,created_at")
             .eq("user_id", userId)
             .order("created_at", { ascending: false }),
           supabase
@@ -358,6 +382,7 @@ print(response.choices[0].message.content)`;
 
       const profile = profileResult.data as ProfileRow | null;
       setBalance(Number(profile?.balance ?? 0));
+      setProfileRole(profile?.role ?? "user");
       setEmail(profile?.email ?? nextSession.user.email ?? "");
       setApiKeys(((apiKeysResult.data ?? []) as ApiKeyRow[]).map((row) => mapApiKey(row)));
       setOrders(((ordersResult.data ?? []) as OrderRow[]).map((row) => mapOrder(row)));
@@ -618,6 +643,57 @@ print(response.choices[0].message.content)`;
     showCopyMessage(`已选择 ¥${amount}，当前版本暂不接支付；订单和余额需要后台人工处理。`);
   };
 
+  const handleManualRecharge = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setManualRechargeMessage("");
+
+    if (!supabase || !session || !isAdmin) {
+      setManualRechargeMessage("只有管理员可以执行人工充值。");
+      return;
+    }
+
+    const targetEmail = manualRechargeEmail.trim();
+    const amount = Number(manualRechargeAmount);
+
+    if (!targetEmail || !Number.isFinite(amount) || amount <= 0) {
+      setManualRechargeMessage("请输入用户邮箱，并填写大于 0 的充值金额。");
+      return;
+    }
+
+    setManualRechargeSubmitting(true);
+
+    try {
+      const { data, error } = await supabase.rpc("manual_recharge", {
+        target_email: targetEmail,
+        recharge_amount: amount,
+        recharge_note: manualRechargeNote.trim() || null,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      const result = Array.isArray(data)
+        ? (data[0] as ManualRechargeResult | undefined)
+        : (data as ManualRechargeResult | null);
+      setManualRechargeMessage(
+        `充值成功：${result?.email ?? targetEmail} 增加 ¥${Number(result?.amount ?? amount).toFixed(2)}，当前余额 ¥${Number(result?.new_balance ?? 0).toFixed(2)}。`
+      );
+      setManualRechargeEmail("");
+      setManualRechargeAmount("");
+      setManualRechargeNote("");
+
+      if (result?.user_id === session.user.id) {
+        await loadDashboardData(session);
+      }
+    } catch (error) {
+      console.error(error);
+      setManualRechargeMessage("充值失败。请确认你是 admin，并且 SQL 函数 manual_recharge 已执行。");
+    } finally {
+      setManualRechargeSubmitting(false);
+    }
+  };
+
   const LoginDialog = loginOpen ? (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4">
       <Card className="w-full max-w-md rounded-3xl border-white/10 bg-slate-900 text-white shadow-2xl">
@@ -742,12 +818,12 @@ print(response.choices[0].message.content)`;
           </div>
 
           <div className="mb-8 flex flex-wrap gap-3">
-            {tabs.map((tab) => (
+            {visibleTabs.map((tab) => (
               <button
                 key={tab.key}
                 onClick={() => setDashboardTab(tab.key)}
                 className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition ${
-                  dashboardTab === tab.key
+                  activeDashboardTab === tab.key
                     ? "bg-white text-slate-950"
                     : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white"
                 }`}
@@ -776,7 +852,7 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
-          {dashboardTab === "overview" ? (
+          {activeDashboardTab === "overview" ? (
             <div>
               <SectionTitle label="Overview" title="平台概览" desc="查看余额、请求数、密钥数量和模型数量。" />
               <div className="grid gap-4 md:grid-cols-4">
@@ -800,7 +876,7 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
-          {dashboardTab === "keys" ? (
+          {activeDashboardTab === "keys" ? (
             <div>
               <SectionTitle label="API Key" title="密钥管理" desc="创建、复制、显示、隐藏和删除你的接口密钥。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
@@ -891,7 +967,7 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
-          {dashboardTab === "playground" ? (
+          {activeDashboardTab === "playground" ? (
             <div>
               <SectionTitle label="Playground" title="在线测试台" desc="当前是本地模拟请求，买完 API Key 后可以接真实模型。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
@@ -926,7 +1002,7 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
-          {dashboardTab === "models" ? (
+          {activeDashboardTab === "models" ? (
             <div>
               <SectionTitle label="Models" title="模型列表" desc="这里展示对外模型别名、价格和路由说明。" />
               <div className="grid gap-4 lg:grid-cols-2">
@@ -953,7 +1029,7 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
-          {dashboardTab === "usage" ? (
+          {activeDashboardTab === "usage" ? (
             <div>
               <SectionTitle label="Usage" title="用量记录" desc="从 Supabase usage_logs 表读取。当前测试台不会写入真实用量。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
@@ -994,7 +1070,7 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
-          {dashboardTab === "recharge" ? (
+          {activeDashboardTab === "recharge" ? (
             <div>
               <SectionTitle label="Recharge" title="充值中心" desc="当前只保留演示按钮，不接支付；余额和订单需要后台人工处理。" />
               <div className="grid gap-4 md:grid-cols-4">
@@ -1013,7 +1089,7 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
-          {dashboardTab === "orders" ? (
+          {activeDashboardTab === "orders" ? (
             <div>
               <SectionTitle label="Orders" title="订单记录" desc="从 Supabase orders 表读取，当前不允许前端自己创建订单。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
@@ -1052,7 +1128,7 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
-          {dashboardTab === "docs" ? (
+          {activeDashboardTab === "docs" ? (
             <div>
               <SectionTitle label="Docs" title="API 文档" desc="给用户复制 base_url、API Key 和接入代码。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
@@ -1086,9 +1162,64 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
-          {dashboardTab === "admin" ? (
+          {activeDashboardTab === "admin" && isAdmin ? (
             <div>
-              <SectionTitle label="Admin" title="管理后台" desc="本地演示版后台，用来展示未来管理员能操作的功能。" />
+              <SectionTitle label="Admin" title="管理后台" desc="管理员人工处理充值，不接真实支付，不允许普通用户改余额。" />
+              <Card className="mb-6 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="mb-5">
+                    <h3 className="text-xl font-bold">人工充值</h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">
+                      通过 Supabase RPC 执行。数据库函数会检查当前用户是否为 admin，然后更新目标用户余额并写入 paid 订单。
+                    </p>
+                  </div>
+                  <form onSubmit={handleManualRecharge} className="grid gap-4 lg:grid-cols-[1.3fr_0.7fr_1fr_auto] lg:items-end">
+                    <div>
+                      <label className="text-sm text-slate-300">用户邮箱</label>
+                      <input
+                        type="email"
+                        value={manualRechargeEmail}
+                        onChange={(event) => setManualRechargeEmail(event.target.value)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="user@example.com"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">充值金额</label>
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={manualRechargeAmount}
+                        onChange={(event) => setManualRechargeAmount(event.target.value)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="100"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">备注</label>
+                      <input
+                        value={manualRechargeNote}
+                        onChange={(event) => setManualRechargeNote(event.target.value)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="人工转账 / 测试额度"
+                      />
+                    </div>
+                    <Button
+                      type="submit"
+                      disabled={manualRechargeSubmitting}
+                      className="rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {manualRechargeSubmitting ? "处理中..." : "确认充值"}
+                    </Button>
+                  </form>
+                  {manualRechargeMessage ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                      {manualRechargeMessage}
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
               <div className="grid gap-4 md:grid-cols-3">
                 {[
                   "用户管理",

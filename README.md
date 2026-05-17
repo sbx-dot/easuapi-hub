@@ -59,6 +59,20 @@ Run the SQL in `supabase/user-data-schema.sql` inside the Supabase SQL Editor. I
 
 It also enables Row Level Security, adds user-only read policies, allows users to create and revoke their own API keys, and creates a trigger that automatically inserts a `profiles` row when a new auth user signs up.
 
+### Admin Manual Recharge
+
+The same SQL file also creates the `manual_recharge` RPC function. It lets only users with `profiles.role = 'admin'` manually add balance to another user and create a paid order record.
+
+To make your own account an admin, run this in the Supabase SQL Editor after your account has signed up and has a `profiles` row:
+
+```sql
+update public.profiles
+set role = 'admin'
+where lower(email) = lower('your-email@example.com');
+```
+
+Replace `your-email@example.com` with your real login email. Do not put this SQL in frontend code.
+
 ## Local Development
 
 Install dependencies:
