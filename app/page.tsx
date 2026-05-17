@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import type { Session } from "@supabase/supabase-js";
 import {
   Activity,
   ArrowRight,
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type Page = "home" | "dashboard";
 type Tab =
@@ -179,8 +181,13 @@ export default function EasyApiHubPage() {
   const [dashboardTab, setDashboardTab] = useState<Tab>("overview");
   const [menuOpen, setMenuOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [email, setEmail] = useState("demo@example.com");
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(Boolean(supabase));
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [authMessage, setAuthMessage] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [balance, setBalance] = useState(18.66);
   const [showKeys, setShowKeys] = useState(false);
   const [copiedText, setCopiedText] = useState("");
@@ -207,6 +214,7 @@ export default function EasyApiHubPage() {
   ]);
 
   const activeKey = apiKeys[0]?.key || "你的_API_Key";
+  const userEmail = session?.user.email ?? email;
   const selectedModelInfo =
     modelList.find((model) => model.name === selectedModel) ?? modelList[0];
 
@@ -227,6 +235,36 @@ response = client.chat.completions.create(
 
 print(response.choices[0].message.content)`;
   }, [activeKey, selectedModel]);
+
+  useEffect(() => {
+    if (!supabase) {
+      return;
+    }
+
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) {
+        return;
+      }
+
+      setSession(data.session);
+      setEmail(data.session?.user.email ?? "");
+      setAuthLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setEmail(nextSession?.user.email ?? "");
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   const showCopyMessage = (message: string) => {
     if (copyTimer.current) {
@@ -251,17 +289,100 @@ print(response.choices[0].message.content)`;
   };
 
   const openDashboard = () => {
-    if (!loggedIn) {
+    if (authLoading || !session) {
+      setAuthMode("login");
+      setAuthMessage("");
       setLoginOpen(true);
       return;
     }
+    setMenuOpen(false);
     setPage("dashboard");
   };
 
-  const login = () => {
-    setLoggedIn(true);
+  const closeLoginDialog = () => {
     setLoginOpen(false);
-    setPage("dashboard");
+    setAuthMessage("");
+  };
+
+  const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAuthMessage("");
+
+    if (!isSupabaseConfigured || !supabase) {
+      setAuthMessage("请先在 Netlify 或本地 .env.local 中配置 Supabase URL 和 anon key。");
+      return;
+    }
+
+    if (!email.trim() || password.length < 6) {
+      setAuthMessage("请输入邮箱，并使用至少 6 位密码。");
+      return;
+    }
+
+    setAuthSubmitting(true);
+
+    try {
+      if (authMode === "signup") {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: {
+            emailRedirectTo:
+              typeof window === "undefined" ? undefined : window.location.origin,
+          },
+        });
+
+        if (error) {
+          setAuthMessage(error.message);
+          return;
+        }
+
+        if (data.session) {
+          setSession(data.session);
+          setLoginOpen(false);
+          setPage("dashboard");
+          return;
+        }
+
+        setAuthMessage("注册成功，请先打开邮箱确认邮件，然后再登录。");
+        setAuthMode("login");
+        return;
+      }
+
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+
+      if (error) {
+        setAuthMessage(error.message);
+        return;
+      }
+
+      if (data.session) {
+        setSession(data.session);
+        setLoginOpen(false);
+        setPage("dashboard");
+        return;
+      }
+
+      setAuthMessage("登录没有返回会话，请检查 Supabase 邮箱确认设置。");
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const logout = async () => {
+    if (supabase) {
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        showCopyMessage(`退出失败：${error.message}`);
+        return;
+      }
+    }
+
+    setSession(null);
+    setPassword("");
+    setPage("home");
   };
 
   const addApiKey = () => {
@@ -323,28 +444,79 @@ print(response.choices[0].message.content)`;
       <Card className="w-full max-w-md rounded-3xl border-white/10 bg-slate-900 text-white shadow-2xl">
         <CardContent className="p-6">
           <div className="mb-5 flex items-center justify-between">
-            <h2 className="text-2xl font-bold">登录控制台</h2>
-            <button onClick={() => setLoginOpen(false)}>
+            <h2 className="text-2xl font-bold">
+              {authMode === "login" ? "登录控制台" : "注册账号"}
+            </h2>
+            <button onClick={closeLoginDialog} type="button">
               <X className="h-5 w-5" />
             </button>
           </div>
-          <label className="text-sm text-slate-300">邮箱</label>
-          <input
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
-          />
-          <label className="mt-4 block text-sm text-slate-300">密码</label>
-          <input
-            type="password"
-            value="demo-only"
-            readOnly
-            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
-          />
-          <p className="mt-3 text-xs text-slate-400">本地演示版，不校验密码；生产环境需要接入真实鉴权。</p>
-          <Button onClick={login} className="mt-5 w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
-            登录 / 注册
-          </Button>
+          <div className="mb-5 grid grid-cols-2 rounded-2xl border border-white/10 bg-slate-950/80 p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode("login");
+                setAuthMessage("");
+              }}
+              className={`rounded-xl px-4 py-2 text-sm transition ${
+                authMode === "login" ? "bg-white text-slate-950" : "text-slate-300"
+              }`}
+            >
+              登录
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode("signup");
+                setAuthMessage("");
+              }}
+              className={`rounded-xl px-4 py-2 text-sm transition ${
+                authMode === "signup" ? "bg-white text-slate-950" : "text-slate-300"
+              }`}
+            >
+              注册
+            </button>
+          </div>
+          <form onSubmit={handleAuthSubmit}>
+            <label className="text-sm text-slate-300">邮箱</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              autoComplete="email"
+              className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+              placeholder="you@example.com"
+            />
+            <label className="mt-4 block text-sm text-slate-300">密码</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete={authMode === "login" ? "current-password" : "new-password"}
+              className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+              placeholder="至少 6 位"
+            />
+            {authMessage ? (
+              <p className="mt-3 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                {authMessage}
+              </p>
+            ) : (
+              <p className="mt-3 text-xs text-slate-400">
+                当前只接入 Supabase 登录注册；支付、真实 AI API 和数据库业务表暂不启用。
+              </p>
+            )}
+            <Button
+              type="submit"
+              disabled={authSubmitting || authLoading}
+              className="mt-5 w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {authSubmitting
+                ? "处理中..."
+                : authMode === "login"
+                  ? "登录"
+                  : "注册"}
+            </Button>
+          </form>
         </CardContent>
       </Card>
     </div>
@@ -369,15 +541,12 @@ print(response.choices[0].message.content)`;
             <div className="flex items-center gap-3">
               <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300 sm:flex">
                 <User className="h-4 w-4" />
-                {email}
+                {userEmail || "已登录用户"}
               </div>
               <Button
                 variant="ghost"
                 className="text-slate-200 hover:bg-white/10 hover:text-white"
-                onClick={() => {
-                  setLoggedIn(false);
-                  setPage("home");
-                }}
+                onClick={logout}
               >
                 <LogOut className="mr-2 h-4 w-4" />
                 退出
@@ -771,7 +940,15 @@ print(response.choices[0].message.content)`;
             ))}
           </nav>
           <div className="hidden items-center gap-3 md:flex">
-            <Button variant="ghost" onClick={() => setLoginOpen(true)} className="text-slate-200 hover:bg-white/10 hover:text-white">
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setAuthMode("login");
+                setAuthMessage("");
+                setLoginOpen(true);
+              }}
+              className="text-slate-200 hover:bg-white/10 hover:text-white"
+            >
               登录
             </Button>
             <Button onClick={openDashboard} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
@@ -813,7 +990,15 @@ print(response.choices[0].message.content)`;
               EasyAPI Hub 提供统一 Base URL、统一 API Key、统一账单和统一模型路由。用户只需要改一行配置，就能调用主流 AI 模型。
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Button size="lg" onClick={() => setLoginOpen(true)} className="rounded-2xl bg-white px-7 text-slate-950 hover:bg-slate-200">
+              <Button
+                size="lg"
+                onClick={() => {
+                  setAuthMode("signup");
+                  setAuthMessage("");
+                  setLoginOpen(true);
+                }}
+                className="rounded-2xl bg-white px-7 text-slate-950 hover:bg-slate-200"
+              >
                 立即免费试用 <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
               <Button size="lg" onClick={openDashboard} variant="outline" className="rounded-2xl border-white/15 bg-white/5 px-7 text-white hover:bg-white/10">
