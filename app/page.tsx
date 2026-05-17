@@ -241,6 +241,18 @@ function mapUsageLog(row: UsageLogRow): UsageItem {
   };
 }
 
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "object" && error !== null && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+
+  return "未知错误";
+}
+
 function SectionTitle({
   label,
   title,
@@ -653,9 +665,9 @@ print(response.choices[0].message.content)`;
     }
 
     const targetEmail = manualRechargeEmail.trim();
-    const amount = Number(manualRechargeAmount);
+    const rechargeAmount = Number(manualRechargeAmount);
 
-    if (!targetEmail || !Number.isFinite(amount) || amount <= 0) {
+    if (!targetEmail || !Number.isFinite(rechargeAmount) || rechargeAmount <= 0) {
       setManualRechargeMessage("请输入用户邮箱，并填写大于 0 的充值金额。");
       return;
     }
@@ -665,7 +677,7 @@ print(response.choices[0].message.content)`;
     try {
       const { data, error } = await supabase.rpc("manual_recharge", {
         target_email: targetEmail,
-        recharge_amount: amount,
+        recharge_amount: rechargeAmount,
         recharge_note: manualRechargeNote.trim() || null,
       });
 
@@ -677,18 +689,16 @@ print(response.choices[0].message.content)`;
         ? (data[0] as ManualRechargeResult | undefined)
         : (data as ManualRechargeResult | null);
       setManualRechargeMessage(
-        `充值成功：${result?.email ?? targetEmail} 增加 ¥${Number(result?.amount ?? amount).toFixed(2)}，当前余额 ¥${Number(result?.new_balance ?? 0).toFixed(2)}。`
+        `充值成功：${result?.email ?? targetEmail} 增加 ¥${Number(result?.amount ?? rechargeAmount).toFixed(2)}，当前余额 ¥${Number(result?.new_balance ?? 0).toFixed(2)}。`
       );
       setManualRechargeEmail("");
       setManualRechargeAmount("");
       setManualRechargeNote("");
 
-      if (result?.user_id === session.user.id) {
-        await loadDashboardData(session);
-      }
+      await loadDashboardData(session);
     } catch (error) {
       console.error(error);
-      setManualRechargeMessage("充值失败。请确认你是 admin，并且 SQL 函数 manual_recharge 已执行。");
+      setManualRechargeMessage(`充值失败：${getErrorMessage(error)}`);
     } finally {
       setManualRechargeSubmitting(false);
     }
