@@ -309,7 +309,7 @@ print(response.choices[0].message.content)`;
     setAuthMessage("");
 
     if (!isSupabaseConfigured || !supabase) {
-      setAuthMessage("请先在 Netlify 或本地 .env.local 中配置 Supabase URL 和 anon key。");
+      setAuthMessage("请先在 Netlify 或本地 .env.local 中配置 Supabase URL 和 Publishable key。");
       return;
     }
 
