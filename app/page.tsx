@@ -1,6 +1,6 @@
 "use client";
 
-import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import type { Session } from "@supabase/supabase-js";
 import {
@@ -47,27 +47,63 @@ type Tab =
   | "admin";
 
 type ApiKeyItem = {
-  id: number;
+  id: string;
   name: string;
-  key: string;
+  keyPrefix: string;
+  oneTimeKey?: string;
   createdAt: string;
 };
 
 type UsageItem = {
-  id: number;
+  id: string;
   time: string;
   model: string;
   promptTokens: number;
   completionTokens: number;
   cost: number;
+  status: string;
 };
 
 type OrderItem = {
-  id: number;
+  id: string;
   time: string;
   amount: number;
   method: string;
   status: string;
+};
+
+type ProfileRow = {
+  id: string;
+  email: string | null;
+  balance: number | string | null;
+  role: string | null;
+  created_at: string;
+};
+
+type ApiKeyRow = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  created_at: string;
+  revoked: boolean;
+};
+
+type OrderRow = {
+  id: string;
+  amount: number | string | null;
+  method: string | null;
+  status: string | null;
+  created_at: string;
+};
+
+type UsageLogRow = {
+  id: string;
+  model: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  cost: number | string | null;
+  status: string | null;
+  created_at: string;
 };
 
 type ModelItem = {
@@ -81,8 +117,7 @@ type ModelItem = {
   desc: string;
 };
 
-const DEMO_CREATED_AT = "05/13 14:30";
-const DEMO_API_KEY = "sk-demo-EasyApiHubPreviewKey00000000000000000001";
+const API_KEY_PREFIX_LENGTH = 16;
 
 const modelList: ModelItem[] = [
   {
@@ -139,8 +174,8 @@ const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "admin", label: "管理后台", icon: <Settings className="h-4 w-4" /> },
 ];
 
-function nowText() {
-  return new Date().toLocaleString("zh-CN", {
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -148,13 +183,52 @@ function nowText() {
   });
 }
 
-function createDemoKey() {
+function createLiveApiKey() {
   const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let key = "sk-demo-";
-  for (let i = 0; i < 44; i += 1) {
-    key += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return key;
+  const bytes = new Uint8Array(40);
+  crypto.getRandomValues(bytes);
+
+  return `sk_live_${Array.from(bytes, (byte) => chars[byte % chars.length]).join("")}`;
+}
+
+async function sha256Hex(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function mapApiKey(row: ApiKeyRow, oneTimeKey?: string): ApiKeyItem {
+  return {
+    id: row.id,
+    name: row.name,
+    keyPrefix: row.key_prefix,
+    oneTimeKey,
+    createdAt: formatDateTime(row.created_at),
+  };
+}
+
+function mapOrder(row: OrderRow): OrderItem {
+  return {
+    id: row.id,
+    time: formatDateTime(row.created_at),
+    amount: Number(row.amount ?? 0),
+    method: row.method ?? "未知",
+    status: row.status ?? "pending",
+  };
+}
+
+function mapUsageLog(row: UsageLogRow): UsageItem {
+  return {
+    id: row.id,
+    time: formatDateTime(row.created_at),
+    model: row.model ?? "unknown",
+    promptTokens: row.prompt_tokens ?? 0,
+    completionTokens: row.completion_tokens ?? 0,
+    cost: Number(row.cost ?? 0),
+    status: row.status ?? "success",
+  };
 }
 
 function SectionTitle({
@@ -186,9 +260,12 @@ export default function EasyApiHubPage() {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [authMessage, setAuthMessage] = useState("");
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataMessage, setDataMessage] = useState("");
+  const [createdApiKey, setCreatedApiKey] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [balance, setBalance] = useState(18.66);
+  const [balance, setBalance] = useState(0);
   const [showKeys, setShowKeys] = useState(false);
   const [copiedText, setCopiedText] = useState("");
   const [selectedModel, setSelectedModel] = useState("smart-chat");
@@ -196,24 +273,11 @@ export default function EasyApiHubPage() {
   const [testResult, setTestResult] = useState(
     "这里会显示模型回复。当前是本地演示版，不会真的请求上游 API。"
   );
-  const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([
-    { id: 1, name: "默认密钥", key: DEMO_API_KEY, createdAt: DEMO_CREATED_AT },
-  ]);
-  const [usageLogs, setUsageLogs] = useState<UsageItem[]>([
-    {
-      id: 1,
-      time: DEMO_CREATED_AT,
-      model: "smart-chat",
-      promptTokens: 128,
-      completionTokens: 326,
-      cost: 0.0136,
-    },
-  ]);
-  const [orders, setOrders] = useState<OrderItem[]>([
-    { id: 10001, time: DEMO_CREATED_AT, amount: 10, method: "演示充值", status: "已完成" },
-  ]);
+  const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
+  const [usageLogs, setUsageLogs] = useState<UsageItem[]>([]);
+  const [orders, setOrders] = useState<OrderItem[]>([]);
 
-  const activeKey = apiKeys[0]?.key || "你的_API_Key";
+  const activeKey = apiKeys[0]?.oneTimeKey ?? (apiKeys[0] ? `${apiKeys[0].keyPrefix}...` : "你的_API_Key");
   const userEmail = session?.user.email ?? email;
   const selectedModelInfo =
     modelList.find((model) => model.name === selectedModel) ?? modelList[0];
@@ -236,6 +300,77 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)`;
   }, [activeKey, selectedModel]);
 
+  const resetDashboardData = useCallback(() => {
+    setBalance(0);
+    setApiKeys([]);
+    setOrders([]);
+    setUsageLogs([]);
+    setCreatedApiKey("");
+    setDataMessage("");
+  }, []);
+
+  const loadDashboardData = useCallback(async (nextSession: Session) => {
+    if (!supabase) {
+      resetDashboardData();
+      return;
+    }
+
+    setDataLoading(true);
+    setDataMessage("");
+
+    const userId = nextSession.user.id;
+
+    try {
+      const [profileResult, apiKeysResult, ordersResult, usageLogsResult] =
+        await Promise.all([
+          supabase
+            .from("profiles")
+            .select("id,email,balance,role,created_at")
+            .eq("id", userId)
+            .maybeSingle(),
+          supabase
+            .from("api_keys")
+            .select("id,name,key_prefix,created_at,revoked")
+            .eq("user_id", userId)
+            .eq("revoked", false)
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("orders")
+            .select("id,amount,method,status,created_at")
+            .eq("user_id", userId)
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("usage_logs")
+            .select("id,model,prompt_tokens,completion_tokens,cost,status,created_at")
+            .eq("user_id", userId)
+            .order("created_at", { ascending: false }),
+        ]);
+
+      const firstError =
+        profileResult.error ??
+        apiKeysResult.error ??
+        ordersResult.error ??
+        usageLogsResult.error;
+
+      if (firstError) {
+        throw firstError;
+      }
+
+      const profile = profileResult.data as ProfileRow | null;
+      setBalance(Number(profile?.balance ?? 0));
+      setEmail(profile?.email ?? nextSession.user.email ?? "");
+      setApiKeys(((apiKeysResult.data ?? []) as ApiKeyRow[]).map((row) => mapApiKey(row)));
+      setOrders(((ordersResult.data ?? []) as OrderRow[]).map((row) => mapOrder(row)));
+      setUsageLogs(((usageLogsResult.data ?? []) as UsageLogRow[]).map((row) => mapUsageLog(row)));
+    } catch (error) {
+      console.error(error);
+      resetDashboardData();
+      setDataMessage("数据库数据读取失败。请确认已经在 Supabase SQL Editor 执行 user-data-schema.sql。");
+    } finally {
+      setDataLoading(false);
+    }
+  }, [resetDashboardData]);
+
   useEffect(() => {
     if (!supabase) {
       return;
@@ -250,6 +385,11 @@ print(response.choices[0].message.content)`;
 
       setSession(data.session);
       setEmail(data.session?.user.email ?? "");
+      if (data.session) {
+        void loadDashboardData(data.session);
+      } else {
+        resetDashboardData();
+      }
       setAuthLoading(false);
     });
 
@@ -258,13 +398,18 @@ print(response.choices[0].message.content)`;
     } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
       setEmail(nextSession?.user.email ?? "");
+      if (nextSession) {
+        void loadDashboardData(nextSession);
+      } else {
+        resetDashboardData();
+      }
     });
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, []);
+  }, [loadDashboardData, resetDashboardData]);
 
   const showCopyMessage = (message: string) => {
     if (copyTimer.current) {
@@ -338,6 +483,7 @@ print(response.choices[0].message.content)`;
 
         if (data.session) {
           setSession(data.session);
+          void loadDashboardData(data.session);
           setLoginOpen(false);
           setPage("dashboard");
           return;
@@ -360,6 +506,7 @@ print(response.choices[0].message.content)`;
 
       if (data.session) {
         setSession(data.session);
+        void loadDashboardData(data.session);
         setLoginOpen(false);
         setPage("dashboard");
         return;
@@ -382,19 +529,73 @@ print(response.choices[0].message.content)`;
 
     setSession(null);
     setPassword("");
+    resetDashboardData();
     setPage("home");
   };
 
-  const addApiKey = () => {
-    setApiKeys((items) => [
-      {
-        id: Date.now(),
-        name: `项目密钥 ${items.length + 1}`,
-        key: createDemoKey(),
-        createdAt: nowText(),
-      },
-      ...items,
-    ]);
+  const addApiKey = async () => {
+    if (!supabase || !session) {
+      openDashboard();
+      return;
+    }
+
+    try {
+      const fullKey = createLiveApiKey();
+      const keyPrefix = fullKey.slice(0, API_KEY_PREFIX_LENGTH);
+      const keyHash = await sha256Hex(fullKey);
+      const keyName = `项目密钥 ${apiKeys.length + 1}`;
+
+      const { data, error } = await supabase
+        .from("api_keys")
+        .insert({
+          user_id: session.user.id,
+          name: keyName,
+          key_prefix: keyPrefix,
+          key_hash: keyHash,
+        })
+        .select("id,name,key_prefix,created_at,revoked")
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      const createdKey = mapApiKey(data as ApiKeyRow, fullKey);
+      setApiKeys((items) => [createdKey, ...items]);
+      setCreatedApiKey(fullKey);
+      setShowKeys(true);
+      showCopyMessage("API Key 已创建，完整密钥只显示这一次。");
+    } catch (error) {
+      console.error(error);
+      showCopyMessage("创建失败，请确认 api_keys 表和 RLS 策略已经执行。");
+    }
+  };
+
+  const revokeApiKey = async (item: ApiKeyItem) => {
+    if (!supabase || !session) {
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from("api_keys")
+        .update({ revoked: true })
+        .eq("id", item.id)
+        .eq("user_id", session.user.id);
+
+      if (error) {
+        throw error;
+      }
+
+      setApiKeys((items) => items.filter((key) => key.id !== item.id));
+      if (item.oneTimeKey && createdApiKey === item.oneTimeKey) {
+        setCreatedApiKey("");
+      }
+      showCopyMessage("API Key 已撤销。");
+    } catch (error) {
+      console.error(error);
+      showCopyMessage("撤销失败，请稍后重试。");
+    }
   };
 
   const runTest = () => {
@@ -408,35 +609,13 @@ print(response.choices[0].message.content)`;
     );
     const total = promptTokens + completionTokens;
 
-    setBalance((value) => Number(Math.max(0, value - cost).toFixed(4)));
     setTestResult(
-      `演示回复：你的请求已通过 ${selectedModel} 处理。\n\n这是本地模拟结果。以后接入真实上游 API Key 后，这里就会返回真实 AI 回复。\n\nTokens：${total}\n模拟费用：¥${cost.toFixed(4)}`
+      `演示回复：你的请求已通过 ${selectedModel} 处理。\n\n这是本地模拟结果，不会请求真实 AI API，也不会写入 usage_logs。\n\nTokens：${total}\n模拟费用：¥${cost.toFixed(4)}`
     );
-    setUsageLogs((logs) => [
-      {
-        id: Date.now(),
-        time: nowText(),
-        model: selectedModel,
-        promptTokens,
-        completionTokens,
-        cost,
-      },
-      ...logs,
-    ]);
   };
 
   const recharge = (amount: number) => {
-    setBalance((value) => Number((value + amount).toFixed(2)));
-    setOrders((items) => [
-      {
-        id: Date.now(),
-        time: nowText(),
-        amount,
-        method: "本地演示充值",
-        status: "已完成",
-      },
-      ...items,
-    ]);
+    showCopyMessage(`已选择 ¥${amount}，当前版本暂不接支付；订单和余额需要后台人工处理。`);
   };
 
   const LoginDialog = loginOpen ? (
@@ -585,6 +764,18 @@ print(response.choices[0].message.content)`;
             </div>
           ) : null}
 
+          {dataMessage ? (
+            <div className="mb-5 rounded-2xl border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+              {dataMessage}
+            </div>
+          ) : null}
+
+          {dataLoading ? (
+            <div className="mb-5 rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-3 text-sm text-slate-300">
+              正在读取你的 Supabase 数据...
+            </div>
+          ) : null}
+
           {dashboardTab === "overview" ? (
             <div>
               <SectionTitle label="Overview" title="平台概览" desc="查看余额、请求数、密钥数量和模型数量。" />
@@ -628,6 +819,30 @@ print(response.choices[0].message.content)`;
                       新建 API Key
                     </Button>
                   </div>
+                  {createdApiKey ? (
+                    <div className="mb-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4">
+                      <p className="text-sm font-semibold text-cyan-100">请立即保存完整 API Key</p>
+                      <p className="mt-2 break-all font-mono text-xs text-cyan-50">{createdApiKey}</p>
+                      <div className="mt-3 flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => copy(createdApiKey, "已复制完整 API Key")}
+                          className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200"
+                        >
+                          <Copy className="mr-2 h-4 w-4" />
+                          复制
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setCreatedApiKey("")}
+                          className="text-cyan-100 hover:bg-white/10 hover:text-white"
+                        >
+                          我已保存
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="space-y-3">
                     {apiKeys.map((item) => (
                       <div key={item.id} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
@@ -635,23 +850,30 @@ print(response.choices[0].message.content)`;
                           <div className="min-w-0">
                             <p className="font-semibold">{item.name}</p>
                             <p className="mt-1 break-all font-mono text-xs text-slate-400">
-                              {showKeys ? item.key : `${item.key.slice(0, 13)}********************************`}
+                              {showKeys && item.oneTimeKey
+                                ? item.oneTimeKey
+                                : `${item.keyPrefix}********************************`}
                             </p>
+                            {!item.oneTimeKey ? (
+                              <p className="mt-2 text-xs text-amber-200/80">完整密钥只在创建时显示一次。</p>
+                            ) : null}
                             <p className="mt-2 text-xs text-slate-500">创建时间：{item.createdAt}</p>
                           </div>
                           <div className="flex shrink-0 gap-2">
+                            {item.oneTimeKey ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => copy(item.oneTimeKey ?? "", "已复制 API Key")}
+                                className="hover:bg-white/10 hover:text-white"
+                              >
+                                <Copy className="h-4 w-4" />
+                              </Button>
+                            ) : null}
                             <Button
                               size="sm"
                               variant="ghost"
-                              onClick={() => copy(item.key, "已复制 API Key")}
-                              className="hover:bg-white/10 hover:text-white"
-                            >
-                              <Copy className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => setApiKeys((items) => items.filter((key) => key.id !== item.id))}
+                              onClick={() => void revokeApiKey(item)}
                               className="hover:bg-red-500/15 hover:text-red-200"
                             >
                               <Trash2 className="h-4 w-4" />
@@ -733,7 +955,7 @@ print(response.choices[0].message.content)`;
 
           {dashboardTab === "usage" ? (
             <div>
-              <SectionTitle label="Usage" title="用量记录" desc="显示每次调用的模型、tokens 和模拟费用。" />
+              <SectionTitle label="Usage" title="用量记录" desc="从 Supabase usage_logs 表读取。当前测试台不会写入真实用量。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="overflow-x-auto">
@@ -756,11 +978,16 @@ print(response.choices[0].message.content)`;
                             <td className="py-3 text-slate-300">{log.promptTokens}</td>
                             <td className="py-3 text-slate-300">{log.completionTokens}</td>
                             <td className="py-3 text-slate-300">¥{log.cost.toFixed(4)}</td>
-                            <td className="py-3 text-emerald-300">成功</td>
+                            <td className="py-3 text-emerald-300">{log.status}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                    {usageLogs.length === 0 ? (
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
+                        还没有用量记录。接入真实 API 中转后，这里会显示 usage_logs 数据。
+                      </div>
+                    ) : null}
                   </div>
                 </CardContent>
               </Card>
@@ -769,7 +996,7 @@ print(response.choices[0].message.content)`;
 
           {dashboardTab === "recharge" ? (
             <div>
-              <SectionTitle label="Recharge" title="充值中心" desc="本地演示充值，会增加余额并生成订单。" />
+              <SectionTitle label="Recharge" title="充值中心" desc="当前只保留演示按钮，不接支付；余额和订单需要后台人工处理。" />
               <div className="grid gap-4 md:grid-cols-4">
                 {[10, 50, 100, 500].map((amount) => (
                   <Card key={amount} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
@@ -788,7 +1015,7 @@ print(response.choices[0].message.content)`;
 
           {dashboardTab === "orders" ? (
             <div>
-              <SectionTitle label="Orders" title="订单记录" desc="显示本地演示充值生成的订单。" />
+              <SectionTitle label="Orders" title="订单记录" desc="从 Supabase orders 表读取，当前不允许前端自己创建订单。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="overflow-x-auto">
@@ -814,6 +1041,11 @@ print(response.choices[0].message.content)`;
                         ))}
                       </tbody>
                     </table>
+                    {orders.length === 0 ? (
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
+                        还没有订单记录。后续接人工充值或支付后，这里会显示 orders 数据。
+                      </div>
+                    ) : null}
                   </div>
                 </CardContent>
               </Card>

@@ -7,9 +7,10 @@ EasyAPI Hub is a Next.js demo for an AI API gateway dashboard. This version keep
 - Email registration and login with Supabase Auth
 - Logout from the dashboard
 - User email shown in the dashboard header
+- User balance, API Key list, orders, and usage logs read from Supabase tables
+- API Key creation stores only a prefix and SHA-256 hash
 - No real payment integration yet
 - No real AI API proxy yet
-- No custom business database tables yet
 
 ## Supabase Setup
 
@@ -46,6 +47,17 @@ Required variables:
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
 
 After adding or changing environment variables in Netlify, redeploy the site.
+
+## User Data Tables
+
+Run the SQL in `supabase/user-data-schema.sql` inside the Supabase SQL Editor. It creates:
+
+- `profiles`
+- `api_keys`
+- `orders`
+- `usage_logs`
+
+It also enables Row Level Security, adds user-only read policies, allows users to create and revoke their own API keys, and creates a trigger that automatically inserts a `profiles` row when a new auth user signs up.
 
 ## Local Development
 
