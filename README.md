@@ -9,8 +9,9 @@ EasyAPI Hub is a Next.js demo for an AI API gateway dashboard. This version keep
 - User email shown in the dashboard header
 - User balance, API Key list, orders, and usage logs read from Supabase tables
 - API Key creation stores only a prefix and SHA-256 hash
+- OpenAI-compatible JSON relay endpoint at `/api/v1/chat/completions`
 - No real payment integration yet
-- No real AI API proxy yet
+- No streaming relay yet
 
 ## Supabase Setup
 
@@ -33,9 +34,15 @@ Create a local `.env.local` file based on `.env.example`:
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+UPSTREAM_BASE_URL=https://api.openai.com/v1
+UPSTREAM_API_KEY=your-upstream-api-key
+UPSTREAM_DEFAULT_MODEL=gpt-4o-mini
+API_PRICE_PER_1K_TOKENS=0.01
 ```
 
 `NEXT_PUBLIC_SUPABASE_URL` must be the project base URL only. Do not include `/rest/v1`, `/auth/v1`, or any other path.
+`SUPABASE_SERVICE_ROLE_KEY` and `UPSTREAM_API_KEY` are server-only secrets. Never prefix them with `NEXT_PUBLIC_`, never put them in browser code, and never commit real values to GitHub.
 
 For Netlify, add the same variables in:
 
@@ -45,6 +52,11 @@ Required variables:
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `UPSTREAM_BASE_URL`
+- `UPSTREAM_API_KEY`
+- `UPSTREAM_DEFAULT_MODEL`
+- `API_PRICE_PER_1K_TOKENS`
 
 After adding or changing environment variables in Netlify, redeploy the site.
 
@@ -58,6 +70,7 @@ Run the SQL in `supabase/user-data-schema.sql` inside the Supabase SQL Editor. I
 - `usage_logs`
 
 It also enables Row Level Security, adds user-only read policies, allows users to create and revoke their own API keys, and creates a trigger that automatically inserts a `profiles` row when a new auth user signs up.
+It also adds an index on `api_keys.key_hash`, used by the API relay to validate user API keys.
 
 ### Admin Manual Recharge
 
@@ -72,6 +85,54 @@ where lower(email) = lower('your-email@example.com');
 ```
 
 Replace `your-email@example.com` with your real login email. Do not put this SQL in frontend code.
+
+## API Relay
+
+The first API relay endpoint is:
+
+```txt
+POST /api/v1/chat/completions
+```
+
+It accepts OpenAI-compatible non-streaming JSON requests. Users call it with the API Key generated in the dashboard:
+
+```js
+fetch("https://eelapi.com/api/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer 用户自己的API_KEY"
+  },
+  body: JSON.stringify({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "user", content: "你好" }
+    ]
+  })
+})
+```
+
+Python:
+
+```py
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="用户自己的API_KEY",
+    base_url="https://eelapi.com/api/v1"
+)
+
+completion = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[
+        {"role": "user", "content": "你好"}
+    ]
+)
+
+print(completion.choices[0].message.content)
+```
+
+The first version rejects `stream=true`, does not store user prompts, records usage tokens when the upstream returns `usage`, and deducts balance using `API_PRICE_PER_1K_TOKENS`.
 
 ## Local Development
 

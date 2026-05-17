@@ -44,6 +44,7 @@ create table if not exists public.usage_logs (
 
 create index if not exists api_keys_user_id_idx on public.api_keys(user_id);
 create index if not exists api_keys_user_id_revoked_idx on public.api_keys(user_id, revoked);
+create unique index if not exists api_keys_key_hash_idx on public.api_keys(key_hash);
 create index if not exists orders_user_id_idx on public.orders(user_id);
 create index if not exists usage_logs_user_id_idx on public.usage_logs(user_id);
 

@@ -312,24 +312,41 @@ export default function EasyApiHubPage() {
   const activeDashboardTab = !isAdmin && dashboardTab === "admin" ? "overview" : dashboardTab;
   const selectedModelInfo =
     modelList.find((model) => model.name === selectedModel) ?? modelList[0];
+  const apiBaseUrl = "https://eelapi.com/api/v1";
 
-  const code = useMemo(() => {
+  const pythonCode = useMemo(() => {
     return `from openai import OpenAI
 
 client = OpenAI(
     api_key="${activeKey}",
-    base_url="https://api.yourdomain.com/v1"
+    base_url="${apiBaseUrl}"
 )
 
-response = client.chat.completions.create(
-    model="${selectedModel}",
+completion = client.chat.completions.create(
+    model="gpt-4o-mini",
     messages=[
-        {"role": "user", "content": "你好，帮我写一个网站标题"}
+        {"role": "user", "content": "你好"}
     ]
 )
 
-print(response.choices[0].message.content)`;
-  }, [activeKey, selectedModel]);
+print(completion.choices[0].message.content)`;
+  }, [activeKey]);
+
+  const javascriptCode = useMemo(() => {
+    return `fetch("${apiBaseUrl}/chat/completions", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer ${activeKey}"
+  },
+  body: JSON.stringify({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "user", content: "你好" }
+    ]
+  })
+})`;
+  }, [activeKey]);
 
   const resetDashboardData = useCallback(() => {
     setBalance(0);
@@ -1146,7 +1163,7 @@ print(response.choices[0].message.content)`;
                   <div className="grid gap-4 md:grid-cols-3">
                     <div className="rounded-2xl bg-slate-950/60 p-4">
                       <p className="text-sm text-slate-400">Base URL</p>
-                      <p className="mt-2 break-all font-mono text-cyan-300">https://api.yourdomain.com/v1</p>
+                      <p className="mt-2 break-all font-mono text-cyan-300">{apiBaseUrl}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-950/60 p-4">
                       <p className="text-sm text-slate-400">模型名</p>
@@ -1158,14 +1175,24 @@ print(response.choices[0].message.content)`;
                     </div>
                   </div>
                   <div className="mt-6 flex items-center justify-between gap-3">
-                    <h3 className="text-lg font-bold">Python 示例</h3>
-                    <Button onClick={() => copy(code, "已复制接入代码")} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                    <h3 className="text-lg font-bold">JavaScript fetch 示例</h3>
+                    <Button onClick={() => copy(javascriptCode, "已复制 JavaScript 示例")} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
                       <Copy className="mr-2 h-4 w-4" />
                       复制
                     </Button>
                   </div>
                   <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/80 p-5 text-sm leading-7 text-slate-200">
-                    <code>{code}</code>
+                    <code>{javascriptCode}</code>
+                  </pre>
+                  <div className="mt-6 flex items-center justify-between gap-3">
+                    <h3 className="text-lg font-bold">Python OpenAI SDK 示例</h3>
+                    <Button onClick={() => copy(pythonCode, "已复制 Python 示例")} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                      <Copy className="mr-2 h-4 w-4" />
+                      复制
+                    </Button>
+                  </div>
+                  <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/80 p-5 text-sm leading-7 text-slate-200">
+                    <code>{pythonCode}</code>
                   </pre>
                 </CardContent>
               </Card>
@@ -1485,12 +1512,12 @@ print(response.choices[0].message.content)`;
                   <div className="flex items-center gap-2 text-sm text-slate-300">
                     <Code2 className="h-4 w-4" /> Python 示例
                   </div>
-                  <Button size="sm" variant="ghost" onClick={() => copy(code, "已复制接入代码")} className="text-slate-300 hover:bg-white/10 hover:text-white">
+                  <Button size="sm" variant="ghost" onClick={() => copy(pythonCode, "已复制接入代码")} className="text-slate-300 hover:bg-white/10 hover:text-white">
                     <Copy className="mr-2 h-4 w-4" />复制
                   </Button>
                 </div>
                 <pre className="overflow-x-auto p-5 text-sm leading-7 text-slate-200">
-                  <code>{code}</code>
+                  <code>{pythonCode}</code>
                 </pre>
               </CardContent>
             </Card>
