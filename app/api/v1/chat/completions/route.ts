@@ -36,6 +36,17 @@ type UpstreamResponse = {
   [key: string]: unknown;
 };
 
+type RateLimitBucket = {
+  count: number;
+  resetAt: number;
+};
+
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 20;
+const MAX_MESSAGES_JSON_LENGTH = 20_000;
+const MAX_TOKENS_LIMIT = 4096;
+const rateLimitBuckets = new Map<string, RateLimitBucket>();
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -85,6 +96,74 @@ function readPricePer1K() {
   return Number.isFinite(price) && price >= 0 ? price : 0.01;
 }
 
+function checkRateLimit(keyHash: string) {
+  const now = Date.now();
+
+  for (const [bucketKey, bucket] of rateLimitBuckets) {
+    if (bucket.resetAt <= now) {
+      rateLimitBuckets.delete(bucketKey);
+    }
+  }
+
+  const existingBucket = rateLimitBuckets.get(keyHash);
+
+  if (!existingBucket || existingBucket.resetAt <= now) {
+    rateLimitBuckets.set(keyHash, {
+      count: 1,
+      resetAt: now + RATE_LIMIT_WINDOW_MS,
+    });
+
+    return {
+      allowed: true,
+      remaining: RATE_LIMIT_MAX_REQUESTS - 1,
+      retryAfterSeconds: RATE_LIMIT_WINDOW_MS / 1000,
+    };
+  }
+
+  if (existingBucket.count >= RATE_LIMIT_MAX_REQUESTS) {
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: Math.ceil((existingBucket.resetAt - now) / 1000),
+    };
+  }
+
+  existingBucket.count += 1;
+
+  return {
+    allowed: true,
+    remaining: RATE_LIMIT_MAX_REQUESTS - existingBucket.count,
+    retryAfterSeconds: Math.ceil((existingBucket.resetAt - now) / 1000),
+  };
+}
+
+function validateRequestLimits(body: ChatCompletionRequest) {
+  if (body.stream === true) {
+    return "Streaming is not supported in this first version. Please omit stream or set stream=false.";
+  }
+
+  if (!Array.isArray(body.messages)) {
+    return "messages must be an array";
+  }
+
+  const messagesLength = JSON.stringify(body.messages).length;
+
+  if (messagesLength > MAX_MESSAGES_JSON_LENGTH) {
+    return `messages is too large. Total serialized messages length must be <= ${MAX_MESSAGES_JSON_LENGTH} characters.`;
+  }
+
+  const maxTokens = body.max_tokens;
+
+  if (
+    maxTokens !== undefined &&
+    (typeof maxTokens !== "number" || !Number.isFinite(maxTokens) || maxTokens > MAX_TOKENS_LIMIT)
+  ) {
+    return `max_tokens must be a number less than or equal to ${MAX_TOKENS_LIMIT}.`;
+  }
+
+  return "";
+}
+
 async function recordUsage({
   userId,
   model,
@@ -107,7 +186,7 @@ async function recordUsage({
   if (status === "success" && cost > 0) {
     const { error: balanceError } = await supabase
       .from("profiles")
-      .update({ balance: balance - cost })
+      .update({ balance: Math.max(0, balance - cost) })
       .eq("id", userId);
 
     if (balanceError) {
@@ -126,6 +205,22 @@ async function recordUsage({
 
   if (usageError) {
     throw new Error(`Failed to record usage: ${usageError.message}`);
+  }
+}
+
+async function safeRecordFailedUsage(userId: string, model: string, balance: number) {
+  try {
+    await recordUsage({
+      userId,
+      model,
+      promptTokens: 0,
+      completionTokens: 0,
+      cost: 0,
+      status: "failed",
+      balance,
+    });
+  } catch (error) {
+    console.error("Failed to record failed usage", error);
   }
 }
 
@@ -151,12 +246,10 @@ export async function POST(request: Request) {
     return errorResponse("Invalid JSON request body", 400);
   }
 
-  if (body.stream === true) {
-    return errorResponse("Streaming is not supported in this first version. Please omit stream or set stream=false.", 400);
-  }
+  const requestLimitError = validateRequestLimits(body);
 
-  if (!Array.isArray(body.messages)) {
-    return errorResponse("messages must be an array", 400);
+  if (requestLimitError) {
+    return errorResponse(requestLimitError, 400);
   }
 
   const upstreamBaseUrl = process.env.UPSTREAM_BASE_URL?.trim();
@@ -191,6 +284,26 @@ export async function POST(request: Request) {
     }
 
     apiKeyRow = keyData as ApiKeyRow;
+
+    const rateLimit = checkRateLimit(keyHash);
+
+    if (!rateLimit.allowed) {
+      return jsonResponse(
+        {
+          error: {
+            message: "Rate limit exceeded. Each API Key can make at most 20 requests per minute.",
+          },
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(rateLimit.retryAfterSeconds),
+            "X-RateLimit-Limit": String(RATE_LIMIT_MAX_REQUESTS),
+            "X-RateLimit-Remaining": "0",
+          },
+        }
+      );
+    }
 
     const { data: profileData, error: profileError } = await supabase
       .from("profiles")
@@ -246,15 +359,7 @@ export async function POST(request: Request) {
     }
 
     if (!upstreamResponse.ok) {
-      await recordUsage({
-        userId: apiKeyRow.user_id,
-        model,
-        promptTokens: 0,
-        completionTokens: 0,
-        cost: 0,
-        status: "failed",
-        balance,
-      });
+      await safeRecordFailedUsage(apiKeyRow.user_id, model, balance);
 
       return errorResponse(
         "Upstream request failed",
@@ -263,15 +368,7 @@ export async function POST(request: Request) {
       );
     }
   } catch (error) {
-    await recordUsage({
-      userId: apiKeyRow.user_id,
-      model,
-      promptTokens: 0,
-      completionTokens: 0,
-      cost: 0,
-      status: "failed",
-      balance,
-    });
+    await safeRecordFailedUsage(apiKeyRow.user_id, model, balance);
 
     const message = error instanceof Error ? error.message : "Upstream request failed";
     return errorResponse("Upstream request failed", 502, message);

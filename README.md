@@ -134,6 +134,20 @@ print(completion.choices[0].message.content)
 
 The first version rejects `stream=true`, does not store user prompts, records usage tokens when the upstream returns `usage`, and deducts balance using `API_PRICE_PER_1K_TOKENS`.
 
+Safety limits in the first version:
+
+- Each API Key can make at most 20 requests per minute.
+- `stream=true` returns `400`.
+- `messages` total serialized length must be no more than 20,000 characters.
+- `max_tokens` must be no more than 4096.
+
+Common errors:
+
+- `400`: stream is unsupported, or request limits were exceeded.
+- `401`: missing or invalid API Key.
+- `402`: insufficient balance.
+- `429`: too many requests.
+
 ## Local Development
 
 Install dependencies:

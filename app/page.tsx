@@ -1194,6 +1194,22 @@ print(completion.choices[0].message.content)`;
                   <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/80 p-5 text-sm leading-7 text-slate-200">
                     <code>{pythonCode}</code>
                   </pre>
+                  <div className="mt-6 rounded-2xl border border-white/10 bg-slate-950/60 p-5">
+                    <h3 className="text-lg font-bold">常见错误码</h3>
+                    <div className="mt-4 grid gap-3 text-sm text-slate-300 md:grid-cols-2">
+                      {[
+                        ["400", "暂不支持 stream，或 messages / max_tokens 超过限制"],
+                        ["401", "缺少或无效 API Key"],
+                        ["402", "余额不足"],
+                        ["429", "请求过快：每个 API Key 每分钟最多 20 次"],
+                      ].map(([status, desc]) => (
+                        <div key={status} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="font-mono text-cyan-300">{status}</p>
+                          <p className="mt-2">{desc}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             </div>
