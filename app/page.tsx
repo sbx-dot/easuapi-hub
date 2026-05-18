@@ -297,6 +297,20 @@ function mapModel(row: ModelRow): ModelItem {
   };
 }
 
+function modelToForm(model: ModelItem): ModelFormState {
+  return {
+    name: model.name,
+    displayName: model.label,
+    provider: model.provider,
+    upstreamModel: model.upstreamModel,
+    inputPrice: String(model.inputPricePer1K),
+    outputPrice: String(model.outputPricePer1K),
+    enabled: model.enabled,
+    description: model.desc === "暂无说明。" ? "" : model.desc,
+    sortOrder: String(model.sortOrder),
+  };
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
@@ -364,6 +378,7 @@ export default function EasyApiHubPage() {
   const [adminModels, setAdminModels] = useState<ModelItem[]>([]);
   const [modelsMessage, setModelsMessage] = useState("");
   const [modelForm, setModelForm] = useState<ModelFormState>(emptyModelForm);
+  const [editModelForm, setEditModelForm] = useState<ModelFormState>(emptyModelForm);
   const [editingModelId, setEditingModelId] = useState("");
   const [modelSubmitting, setModelSubmitting] = useState(false);
   const [adminModelMessage, setAdminModelMessage] = useState("");
@@ -427,6 +442,7 @@ print(completion.choices[0].message.content)`;
     setManualRechargeMessage("");
     setAdminModels([]);
     setModelForm(emptyModelForm);
+    setEditModelForm(emptyModelForm);
     setEditingModelId("");
     setAdminModelMessage("");
   }, []);
@@ -869,6 +885,7 @@ print(completion.choices[0].message.content)`;
 
   const resetModelForm = () => {
     setModelForm(emptyModelForm);
+    setEditModelForm(emptyModelForm);
     setEditingModelId("");
   };
 
@@ -878,18 +895,53 @@ print(completion.choices[0].message.content)`;
     }
 
     setEditingModelId(model.id);
-    setModelForm({
-      name: model.name,
-      displayName: model.label,
-      provider: model.provider,
-      upstreamModel: model.upstreamModel,
-      inputPrice: String(model.inputPricePer1K),
-      outputPrice: String(model.outputPricePer1K),
-      enabled: model.enabled,
-      description: model.desc === "暂无说明。" ? "" : model.desc,
-      sortOrder: String(model.sortOrder),
-    });
+    setEditModelForm(modelToForm(model));
     setAdminModelMessage(`正在编辑模型：${model.name}`);
+  };
+
+  const parseModelForm = (form: ModelFormState) => {
+    const name = form.name.trim();
+    const displayName = form.displayName.trim();
+    const upstreamModel = form.upstreamModel.trim();
+    const provider = form.provider.trim() || "deepseek";
+    const inputPrice = Number(form.inputPrice);
+    const outputPrice = Number(form.outputPrice);
+    const sortOrder = Number(form.sortOrder || 100);
+    const description = form.description.trim() || null;
+
+    if (!name || !displayName || !upstreamModel) {
+      return {
+        error: "请填写 model name、展示名称和上游模型名。",
+        payload: null,
+      };
+    }
+
+    if (
+      !Number.isFinite(inputPrice) ||
+      inputPrice < 0 ||
+      !Number.isFinite(outputPrice) ||
+      outputPrice < 0
+    ) {
+      return {
+        error: "模型价格必须是大于等于 0 的数字。",
+        payload: null,
+      };
+    }
+
+    return {
+      error: "",
+      payload: {
+        name,
+        upstream_model: upstreamModel,
+        display_name: displayName,
+        provider,
+        input_price_per_1k: inputPrice,
+        output_price_per_1k: outputPrice,
+        enabled: form.enabled,
+        description,
+        sort_order: Number.isFinite(sortOrder) ? sortOrder : 100,
+      },
+    };
   };
 
   const handleModelSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -901,66 +953,65 @@ print(completion.choices[0].message.content)`;
       return;
     }
 
-    const name = modelForm.name.trim();
-    const displayName = modelForm.displayName.trim();
-    const upstreamModel = modelForm.upstreamModel.trim();
-    const provider = modelForm.provider.trim() || "deepseek";
-    const inputPrice = Number(modelForm.inputPrice);
-    const outputPrice = Number(modelForm.outputPrice);
-    const sortOrder = Number(modelForm.sortOrder || 100);
-    const description = modelForm.description.trim() || null;
+    const { error: formError, payload } = parseModelForm(modelForm);
 
-    if (!name || !displayName || !upstreamModel) {
-      setAdminModelMessage("请填写 model name、展示名称和上游模型名。");
-      return;
-    }
-
-    if (
-      !Number.isFinite(inputPrice) ||
-      inputPrice < 0 ||
-      !Number.isFinite(outputPrice) ||
-      outputPrice < 0
-    ) {
-      setAdminModelMessage("模型价格必须是大于等于 0 的数字。");
+    if (formError || !payload) {
+      setAdminModelMessage(formError);
       return;
     }
 
     setModelSubmitting(true);
 
     try {
-      const payload = {
-        upstream_model: upstreamModel,
-        display_name: displayName,
-        provider,
-        input_price_per_1k: inputPrice,
-        output_price_per_1k: outputPrice,
-        enabled: modelForm.enabled,
-        description,
-        sort_order: Number.isFinite(sortOrder) ? sortOrder : 100,
-      };
+      const { error } = await supabase.from("models").insert(payload);
 
-      if (editingModelId) {
-        const { error } = await supabase.from("models").update(payload).eq("id", editingModelId);
-
-        if (error) {
-          throw error;
-        }
-
-        setAdminModelMessage(`模型已更新：${name}`);
-      } else {
-        const { error } = await supabase.from("models").insert({
-          name,
-          ...payload,
-        });
-
-        if (error) {
-          throw error;
-        }
-
-        setAdminModelMessage(`模型已新增：${name}`);
+      if (error) {
+        throw error;
       }
 
-      resetModelForm();
+      setAdminModelMessage(`模型已新增：${payload.name}`);
+      setModelForm(emptyModelForm);
+      await Promise.all([loadEnabledModels(), loadAdminModels()]);
+    } catch (error) {
+      console.error(error);
+      setAdminModelMessage(`模型保存失败：${getErrorMessage(error)}`);
+    } finally {
+      setModelSubmitting(false);
+    }
+  };
+
+  const saveEditedModel = async (model: ModelItem) => {
+    setAdminModelMessage("");
+
+    if (!supabase || !session || !isAdmin || !model.id) {
+      setAdminModelMessage("只有管理员可以编辑模型价格。");
+      return;
+    }
+
+    const { error: formError, payload } = parseModelForm({
+      ...editModelForm,
+      name: model.name,
+    });
+
+    if (formError || !payload) {
+      setAdminModelMessage(formError);
+      return;
+    }
+
+    const { name: _name, ...updatePayload } = payload;
+    void _name;
+    setModelSubmitting(true);
+
+    try {
+      const { error } = await supabase.from("models").update(updatePayload).eq("id", model.id);
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminModelMessage(`模型已更新：${model.name}`);
+      setEditingModelId("");
+      setEditModelForm(emptyModelForm);
       await Promise.all([loadEnabledModels(), loadAdminModels()]);
     } catch (error) {
       console.error(error);
@@ -1589,10 +1640,9 @@ print(completion.choices[0].message.content)`;
                       <label className="text-sm text-slate-300">model name</label>
                       <input
                         value={modelForm.name}
-                        disabled={Boolean(editingModelId)}
                         onChange={(event) => setModelForm((form) => ({ ...form, name: event.target.value }))}
-                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-sm text-white outline-none focus:border-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
-                        placeholder="deepseek-chat"
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-sm text-white outline-none focus:border-cyan-300"
+                        placeholder="deepseek-v4-pro"
                       />
                     </div>
                     <div>
@@ -1601,7 +1651,7 @@ print(completion.choices[0].message.content)`;
                         value={modelForm.displayName}
                         onChange={(event) => setModelForm((form) => ({ ...form, displayName: event.target.value }))}
                         className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
-                        placeholder="DeepSeek Chat"
+                        placeholder="DeepSeek V4 Pro"
                       />
                     </div>
                     <div>
@@ -1619,7 +1669,7 @@ print(completion.choices[0].message.content)`;
                         value={modelForm.upstreamModel}
                         onChange={(event) => setModelForm((form) => ({ ...form, upstreamModel: event.target.value }))}
                         className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-sm text-white outline-none focus:border-cyan-300"
-                        placeholder="deepseek-chat"
+                        placeholder="deepseek-v4-pro"
                       />
                     </div>
                     <div>
@@ -1669,7 +1719,7 @@ print(completion.choices[0].message.content)`;
                         value={modelForm.description}
                         onChange={(event) => setModelForm((form) => ({ ...form, description: event.target.value }))}
                         className="mt-2 min-h-20 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
-                        placeholder="适合通用聊天、写作、代码和轻量分析。"
+                        placeholder="DeepSeek V4 Pro 模型"
                       />
                     </div>
                     <div className="flex flex-wrap gap-3 lg:col-span-4">
@@ -1678,18 +1728,28 @@ print(completion.choices[0].message.content)`;
                         disabled={modelSubmitting}
                         className="rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {modelSubmitting ? "保存中..." : editingModelId ? "保存修改" : "新增模型"}
+                        {modelSubmitting ? "保存中..." : "新增模型"}
                       </Button>
-                      {editingModelId ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          onClick={resetModelForm}
-                          className="text-slate-200 hover:bg-white/10 hover:text-white"
-                        >
-                          取消编辑
-                        </Button>
-                      ) : null}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={() =>
+                          setModelForm({
+                            name: "deepseek-v4-pro",
+                            upstreamModel: "deepseek-v4-pro",
+                            displayName: "DeepSeek V4 Pro",
+                            provider: "deepseek",
+                            inputPrice: "0.02",
+                            outputPrice: "0.02",
+                            enabled: true,
+                            description: "DeepSeek V4 Pro 模型",
+                            sortOrder: "30",
+                          })
+                        }
+                        className="text-slate-200 hover:bg-white/10 hover:text-white"
+                      >
+                        填入 DeepSeek V4 Pro 示例
+                      </Button>
                     </div>
                   </form>
 
@@ -1700,7 +1760,7 @@ print(completion.choices[0].message.content)`;
                   ) : null}
 
                   <div className="mt-6 overflow-x-auto">
-                    <table className="w-full min-w-[860px] text-left text-sm">
+                    <table className="w-full min-w-[1180px] text-left text-sm">
                       <thead className="text-slate-400">
                         <tr className="border-b border-white/10">
                           <th className="py-3">model</th>
@@ -1709,47 +1769,190 @@ print(completion.choices[0].message.content)`;
                           <th className="py-3">上游</th>
                           <th className="py-3">输入</th>
                           <th className="py-3">输出</th>
+                          <th className="py-3">说明</th>
+                          <th className="py-3">排序</th>
                           <th className="py-3">状态</th>
                           <th className="py-3">操作</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {adminModels.map((model) => (
-                          <tr key={model.id ?? model.name} className="border-b border-white/5">
-                            <td className="py-3 font-mono text-cyan-300">{model.name}</td>
-                            <td className="py-3 text-slate-300">{model.label}</td>
-                            <td className="py-3 text-slate-300">{model.provider}</td>
-                            <td className="py-3 font-mono text-xs text-slate-300">{model.upstreamModel}</td>
-                            <td className="py-3 text-slate-300">{model.inputPrice}</td>
-                            <td className="py-3 text-slate-300">{model.outputPrice}</td>
-                            <td className={model.enabled ? "py-3 text-emerald-300" : "py-3 text-amber-300"}>
-                              {model.enabled ? "启用" : "禁用"}
-                            </td>
-                            <td className="py-3">
-                              <div className="flex gap-2">
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => startEditModel(model)}
-                                  className="hover:bg-white/10 hover:text-white"
-                                >
-                                  编辑
-                                </Button>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  disabled={modelSubmitting}
-                                  onClick={() => void toggleModelEnabled(model)}
-                                  className="hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  {model.enabled ? "禁用" : "启用"}
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                        {adminModels.map((model) => {
+                          const isEditing = editingModelId === model.id;
+                          const inputClass =
+                            "w-full rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-white outline-none focus:border-cyan-300";
+
+                          return (
+                            <tr key={model.id ?? model.name} className="border-b border-white/5 align-top">
+                              <td className="py-3 font-mono text-cyan-300">{model.name}</td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    value={editModelForm.displayName}
+                                    onChange={(event) =>
+                                      setEditModelForm((form) => ({ ...form, displayName: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  />
+                                ) : (
+                                  model.label
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    value={editModelForm.provider}
+                                    onChange={(event) =>
+                                      setEditModelForm((form) => ({ ...form, provider: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  />
+                                ) : (
+                                  model.provider
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 font-mono text-xs text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    value={editModelForm.upstreamModel}
+                                    onChange={(event) =>
+                                      setEditModelForm((form) => ({ ...form, upstreamModel: event.target.value }))
+                                    }
+                                    className={`${inputClass} font-mono text-xs`}
+                                  />
+                                ) : (
+                                  model.upstreamModel
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.0001"
+                                    value={editModelForm.inputPrice}
+                                    onChange={(event) =>
+                                      setEditModelForm((form) => ({ ...form, inputPrice: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  />
+                                ) : (
+                                  model.inputPrice
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.0001"
+                                    value={editModelForm.outputPrice}
+                                    onChange={(event) =>
+                                      setEditModelForm((form) => ({ ...form, outputPrice: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  />
+                                ) : (
+                                  model.outputPrice
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <textarea
+                                    value={editModelForm.description}
+                                    onChange={(event) =>
+                                      setEditModelForm((form) => ({ ...form, description: event.target.value }))
+                                    }
+                                    className={`${inputClass} min-h-20 min-w-52`}
+                                  />
+                                ) : (
+                                  <span className="block max-w-64 leading-6">{model.desc}</span>
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    value={editModelForm.sortOrder}
+                                    onChange={(event) =>
+                                      setEditModelForm((form) => ({ ...form, sortOrder: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  />
+                                ) : (
+                                  model.sortOrder
+                                )}
+                              </td>
+                              <td className={model.enabled ? "py-3 pr-3 text-emerald-300" : "py-3 pr-3 text-amber-300"}>
+                                {isEditing ? (
+                                  <label className="flex items-center gap-2 text-sm text-slate-200">
+                                    <input
+                                      type="checkbox"
+                                      checked={editModelForm.enabled}
+                                      onChange={(event) =>
+                                        setEditModelForm((form) => ({ ...form, enabled: event.target.checked }))
+                                      }
+                                      className="h-4 w-4"
+                                    />
+                                    启用
+                                  </label>
+                                ) : model.enabled ? (
+                                  "启用"
+                                ) : (
+                                  "禁用"
+                                )}
+                              </td>
+                              <td className="py-3">
+                                <div className="flex gap-2">
+                                  {isEditing ? (
+                                    <>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        disabled={modelSubmitting}
+                                        onClick={() => void saveEditedModel(model)}
+                                        className="rounded-xl bg-white text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        保存修改
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={resetModelForm}
+                                        className="hover:bg-white/10 hover:text-white"
+                                      >
+                                        取消
+                                      </Button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => startEditModel(model)}
+                                        className="hover:bg-white/10 hover:text-white"
+                                      >
+                                        编辑
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        disabled={modelSubmitting}
+                                        onClick={() => void toggleModelEnabled(model)}
+                                        className="hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {model.enabled ? "禁用" : "启用"}
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                     {adminModels.length === 0 ? (
