@@ -42,21 +42,39 @@ create table if not exists public.usage_logs (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.models (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  upstream_model text not null,
+  display_name text not null,
+  provider text not null default 'deepseek',
+  input_price_per_1k numeric not null default 0,
+  output_price_per_1k numeric not null default 0,
+  enabled boolean not null default true,
+  description text,
+  sort_order integer not null default 100,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists api_keys_user_id_idx on public.api_keys(user_id);
 create index if not exists api_keys_user_id_revoked_idx on public.api_keys(user_id, revoked);
 create unique index if not exists api_keys_key_hash_idx on public.api_keys(key_hash);
 create index if not exists orders_user_id_idx on public.orders(user_id);
 create index if not exists usage_logs_user_id_idx on public.usage_logs(user_id);
+create index if not exists models_enabled_sort_order_idx on public.models(enabled, sort_order);
 
 alter table public.profiles enable row level security;
 alter table public.api_keys enable row level security;
 alter table public.orders enable row level security;
 alter table public.usage_logs enable row level security;
+alter table public.models enable row level security;
 
 revoke all on table public.profiles from anon, authenticated;
 revoke all on table public.api_keys from anon, authenticated;
 revoke all on table public.orders from anon, authenticated;
 revoke all on table public.usage_logs from anon, authenticated;
+revoke all on table public.models from anon, authenticated;
 
 grant select on table public.profiles to authenticated;
 grant select on table public.api_keys to authenticated;
@@ -64,6 +82,89 @@ grant insert (user_id, name, key_prefix, key_hash) on table public.api_keys to a
 grant update (revoked) on table public.api_keys to authenticated;
 grant select on table public.orders to authenticated;
 grant select on table public.usage_logs to authenticated;
+grant select on table public.models to anon, authenticated;
+grant insert (
+  name,
+  upstream_model,
+  display_name,
+  provider,
+  input_price_per_1k,
+  output_price_per_1k,
+  enabled,
+  description,
+  sort_order
+) on table public.models to authenticated;
+grant update (
+  upstream_model,
+  display_name,
+  provider,
+  input_price_per_1k,
+  output_price_per_1k,
+  enabled,
+  description,
+  sort_order
+) on table public.models to authenticated;
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists set_models_updated_at on public.models;
+create trigger set_models_updated_at
+before update on public.models
+for each row execute function public.set_updated_at();
+
+insert into public.models (
+  name,
+  upstream_model,
+  display_name,
+  provider,
+  input_price_per_1k,
+  output_price_per_1k,
+  enabled,
+  description,
+  sort_order
+)
+values
+  (
+    'deepseek-chat',
+    'deepseek-chat',
+    'DeepSeek Chat',
+    'deepseek',
+    0.01,
+    0.01,
+    true,
+    '适合通用聊天、写作、代码和轻量分析。',
+    10
+  ),
+  (
+    'deepseek-reasoner',
+    'deepseek-reasoner',
+    'DeepSeek Reasoner',
+    'deepseek',
+    0.02,
+    0.02,
+    true,
+    '适合复杂推理、规划和多步骤问题。',
+    20
+  )
+on conflict (name) do update
+set
+  upstream_model = excluded.upstream_model,
+  display_name = excluded.display_name,
+  provider = excluded.provider,
+  input_price_per_1k = excluded.input_price_per_1k,
+  output_price_per_1k = excluded.output_price_per_1k,
+  enabled = excluded.enabled,
+  description = excluded.description,
+  sort_order = excluded.sort_order;
 
 drop function if exists public.manual_recharge(text, numeric, text);
 create or replace function public.manual_recharge(
@@ -176,6 +277,63 @@ on public.usage_logs
 for select
 to authenticated
 using ((select auth.uid()) = user_id);
+
+drop policy if exists "Enabled models are readable" on public.models;
+create policy "Enabled models are readable"
+on public.models
+for select
+to anon, authenticated
+using (enabled = true);
+
+drop policy if exists "Admins can read all models" on public.models;
+create policy "Admins can read all models"
+on public.models
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+);
+
+drop policy if exists "Admins can insert models" on public.models;
+create policy "Admins can insert models"
+on public.models
+for insert
+to authenticated
+with check (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+);
+
+drop policy if exists "Admins can update models" on public.models;
+create policy "Admins can update models"
+on public.models
+for update
+to authenticated
+using (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+);
 
 create or replace function public.handle_new_user()
 returns trigger

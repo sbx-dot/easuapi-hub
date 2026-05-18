@@ -21,6 +21,14 @@ type ProfileRow = {
   balance: number | string | null;
 };
 
+type ModelPricingRow = {
+  name: string;
+  upstream_model: string;
+  input_price_per_1k: number | string;
+  output_price_per_1k: number | string;
+  enabled: boolean;
+};
+
 type UpstreamUsage = {
   prompt_tokens?: number;
   completion_tokens?: number;
@@ -90,10 +98,20 @@ function getBearerToken(request: Request) {
   return match?.[1]?.trim() ?? "";
 }
 
-function readPricePer1K() {
+function readFallbackPricePer1K() {
   const price = Number(process.env.API_PRICE_PER_1K_TOKENS ?? "0.01");
 
   return Number.isFinite(price) && price >= 0 ? price : 0.01;
+}
+
+function readModelPrice(value: number | string | null | undefined) {
+  const price = Number(value);
+
+  if (Number.isFinite(price) && price >= 0) {
+    return price;
+  }
+
+  return readFallbackPricePer1K();
 }
 
 function checkRateLimit(keyHash: string) {
@@ -254,7 +272,7 @@ export async function POST(request: Request) {
 
   const upstreamBaseUrl = process.env.UPSTREAM_BASE_URL?.trim();
   const upstreamApiKey = process.env.UPSTREAM_API_KEY?.trim();
-  const defaultModel = process.env.UPSTREAM_DEFAULT_MODEL?.trim() || "gpt-4o-mini";
+  const defaultModel = process.env.UPSTREAM_DEFAULT_MODEL?.trim() || "deepseek-chat";
   const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : defaultModel;
 
   if (!upstreamBaseUrl || !upstreamApiKey) {
@@ -263,6 +281,7 @@ export async function POST(request: Request) {
 
   let apiKeyRow: ApiKeyRow;
   let balance: number;
+  let modelPricing: ModelPricingRow | null = null;
 
   try {
     const supabase = getSupabaseAdmin();
@@ -321,14 +340,35 @@ export async function POST(request: Request) {
     if (!profile || balance <= 0) {
       return errorResponse("Insufficient balance", 402);
     }
+
+    const { data: modelData, error: modelError } = await supabase
+      .from("models")
+      .select("name,upstream_model,input_price_per_1k,output_price_per_1k,enabled")
+      .eq("name", model)
+      .eq("enabled", true)
+      .maybeSingle();
+
+    if (modelError) {
+      throw new Error(`Model pricing lookup failed: ${modelError.message}`);
+    }
+
+    if (!modelData) {
+      return errorResponse("model not supported or disabled", 400);
+    }
+
+    modelPricing = modelData as ModelPricingRow;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Authentication failed";
     return errorResponse(message, 500);
   }
 
+  if (!modelPricing) {
+    return errorResponse("model not supported or disabled", 400);
+  }
+
   const upstreamPayload = {
     ...body,
-    model,
+    model: modelPricing.upstream_model,
     stream: false,
   };
 
@@ -359,7 +399,7 @@ export async function POST(request: Request) {
     }
 
     if (!upstreamResponse.ok) {
-      await safeRecordFailedUsage(apiKeyRow.user_id, model, balance);
+      await safeRecordFailedUsage(apiKeyRow.user_id, modelPricing.name, balance);
 
       return errorResponse(
         "Upstream request failed",
@@ -368,7 +408,7 @@ export async function POST(request: Request) {
       );
     }
   } catch (error) {
-    await safeRecordFailedUsage(apiKeyRow.user_id, model, balance);
+    await safeRecordFailedUsage(apiKeyRow.user_id, modelPricing.name, balance);
 
     const message = error instanceof Error ? error.message : "Upstream request failed";
     return errorResponse("Upstream request failed", 502, message);
@@ -377,16 +417,26 @@ export async function POST(request: Request) {
   const usage = upstreamJson.usage;
   const promptTokens = Number(usage?.prompt_tokens ?? 0);
   const completionTokens = Number(usage?.completion_tokens ?? 0);
-  const totalTokens = Number(usage?.total_tokens ?? promptTokens + completionTokens);
-  const pricePer1K = readPricePer1K();
-  const cost = totalTokens > 0 ? Number(((totalTokens / 1000) * pricePer1K).toFixed(6)) : 0;
+  const safePromptTokens = Number.isFinite(promptTokens) ? promptTokens : 0;
+  const safeCompletionTokens = Number.isFinite(completionTokens) ? completionTokens : 0;
+  const inputPricePer1K = readModelPrice(modelPricing.input_price_per_1k);
+  const outputPricePer1K = readModelPrice(modelPricing.output_price_per_1k);
+  const cost =
+    safePromptTokens > 0 || safeCompletionTokens > 0
+      ? Number(
+          (
+            (safePromptTokens / 1000) * inputPricePer1K +
+            (safeCompletionTokens / 1000) * outputPricePer1K
+          ).toFixed(6)
+        )
+      : 0;
 
   try {
     await recordUsage({
       userId: apiKeyRow.user_id,
-      model: upstreamJson.model ?? model,
-      promptTokens: Number.isFinite(promptTokens) ? promptTokens : 0,
-      completionTokens: Number.isFinite(completionTokens) ? completionTokens : 0,
+      model: modelPricing.name,
+      promptTokens: safePromptTokens,
+      completionTokens: safeCompletionTokens,
       cost,
       status: "success",
       balance,

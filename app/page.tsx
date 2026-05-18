@@ -116,8 +116,25 @@ type ManualRechargeResult = {
   note: string | null;
 };
 
-type ModelItem = {
+type ModelRow = {
+  id: string;
   name: string;
+  upstream_model: string;
+  display_name: string;
+  provider: string;
+  input_price_per_1k: number | string;
+  output_price_per_1k: number | string;
+  enabled: boolean;
+  description: string | null;
+  sort_order: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ModelItem = {
+  id?: string;
+  name: string;
+  upstreamModel: string;
   label: string;
   provider: string;
   inputPrice: string;
@@ -125,50 +142,62 @@ type ModelItem = {
   inputPricePer1K: number;
   outputPricePer1K: number;
   desc: string;
+  enabled: boolean;
+  sortOrder: number;
+};
+
+type ModelFormState = {
+  name: string;
+  displayName: string;
+  provider: string;
+  upstreamModel: string;
+  inputPrice: string;
+  outputPrice: string;
+  enabled: boolean;
+  description: string;
+  sortOrder: string;
 };
 
 const API_KEY_PREFIX_LENGTH = 16;
 
-const modelList: ModelItem[] = [
+const emptyModelForm: ModelFormState = {
+  name: "",
+  displayName: "",
+  provider: "deepseek",
+  upstreamModel: "",
+  inputPrice: "0.01",
+  outputPrice: "0.01",
+  enabled: true,
+  description: "",
+  sortOrder: "100",
+};
+
+const fallbackModelList: ModelItem[] = [
   {
-    name: "smart-chat",
-    label: "聪明模型",
-    provider: "GPT / Claude 优先",
+    name: "deepseek-chat",
+    upstreamModel: "deepseek-chat",
+    label: "DeepSeek Chat",
+    provider: "deepseek",
+    inputPrice: "¥0.01 / 1K tokens",
+    outputPrice: "¥0.01 / 1K tokens",
+    inputPricePer1K: 0.01,
+    outputPricePer1K: 0.01,
+    desc: "适合通用聊天、写作、代码和轻量分析。",
+    enabled: true,
+    sortOrder: 10,
+  },
+  {
+    name: "deepseek-reasoner",
+    upstreamModel: "deepseek-reasoner",
+    label: "DeepSeek Reasoner",
+    provider: "deepseek",
     inputPrice: "¥0.02 / 1K tokens",
-    outputPrice: "¥0.06 / 1K tokens",
+    outputPrice: "¥0.02 / 1K tokens",
     inputPricePer1K: 0.02,
-    outputPricePer1K: 0.06,
-    desc: "适合写作、代码、复杂分析。",
-  },
-  {
-    name: "fast-chat",
-    label: "快速模型",
-    provider: "DeepSeek / Qwen 优先",
-    inputPrice: "¥0.005 / 1K tokens",
-    outputPrice: "¥0.015 / 1K tokens",
-    inputPricePer1K: 0.005,
-    outputPricePer1K: 0.015,
-    desc: "适合客服、聊天、轻量任务。",
-  },
-  {
-    name: "long-text",
-    label: "长文本模型",
-    provider: "Claude / Gemini 优先",
-    inputPrice: "¥0.03 / 1K tokens",
-    outputPrice: "¥0.08 / 1K tokens",
-    inputPricePer1K: 0.03,
-    outputPricePer1K: 0.08,
-    desc: "适合长文档、总结、长上下文。",
-  },
-  {
-    name: "cheap-chat",
-    label: "便宜模型",
-    provider: "Qwen / DeepSeek 优先",
-    inputPrice: "¥0.002 / 1K tokens",
-    outputPrice: "¥0.006 / 1K tokens",
-    inputPricePer1K: 0.002,
-    outputPricePer1K: 0.006,
-    desc: "适合批量任务和测试。",
+    outputPricePer1K: 0.02,
+    desc: "适合复杂推理、规划和多步骤问题。",
+    enabled: true,
+    sortOrder: 20,
   },
 ];
 
@@ -241,6 +270,33 @@ function mapUsageLog(row: UsageLogRow): UsageItem {
   };
 }
 
+function formatModelPrice(value: number) {
+  const normalized = Number.isFinite(value) ? value : 0;
+  const text = normalized.toFixed(4).replace(/\.?0+$/u, "");
+
+  return `¥${text || "0"} / 1K tokens`;
+}
+
+function mapModel(row: ModelRow): ModelItem {
+  const inputPricePer1K = Number(row.input_price_per_1k ?? 0);
+  const outputPricePer1K = Number(row.output_price_per_1k ?? 0);
+
+  return {
+    id: row.id,
+    name: row.name,
+    upstreamModel: row.upstream_model,
+    label: row.display_name,
+    provider: row.provider,
+    inputPrice: formatModelPrice(inputPricePer1K),
+    outputPrice: formatModelPrice(outputPricePer1K),
+    inputPricePer1K,
+    outputPricePer1K,
+    desc: row.description ?? "暂无说明。",
+    enabled: row.enabled,
+    sortOrder: row.sort_order ?? 100,
+  };
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
@@ -296,7 +352,7 @@ export default function EasyApiHubPage() {
   const [balance, setBalance] = useState(0);
   const [showKeys, setShowKeys] = useState(false);
   const [copiedText, setCopiedText] = useState("");
-  const [selectedModel, setSelectedModel] = useState("smart-chat");
+  const [selectedModel, setSelectedModel] = useState("deepseek-chat");
   const [testPrompt, setTestPrompt] = useState("你好，帮我写一个 API 中转站介绍");
   const [testResult, setTestResult] = useState(
     "这里会显示模型回复。当前是本地演示版，不会真的请求上游 API。"
@@ -304,6 +360,13 @@ export default function EasyApiHubPage() {
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
   const [usageLogs, setUsageLogs] = useState<UsageItem[]>([]);
   const [orders, setOrders] = useState<OrderItem[]>([]);
+  const [modelList, setModelList] = useState<ModelItem[]>(fallbackModelList);
+  const [adminModels, setAdminModels] = useState<ModelItem[]>([]);
+  const [modelsMessage, setModelsMessage] = useState("");
+  const [modelForm, setModelForm] = useState<ModelFormState>(emptyModelForm);
+  const [editingModelId, setEditingModelId] = useState("");
+  const [modelSubmitting, setModelSubmitting] = useState(false);
+  const [adminModelMessage, setAdminModelMessage] = useState("");
 
   const activeKey = apiKeys[0]?.oneTimeKey ?? (apiKeys[0] ? `${apiKeys[0].keyPrefix}...` : "你的_API_Key");
   const userEmail = session?.user.email ?? email;
@@ -311,8 +374,10 @@ export default function EasyApiHubPage() {
   const visibleTabs = tabs.filter((tab) => tab.key !== "admin" || isAdmin);
   const activeDashboardTab = !isAdmin && dashboardTab === "admin" ? "overview" : dashboardTab;
   const selectedModelInfo =
-    modelList.find((model) => model.name === selectedModel) ?? modelList[0];
+    modelList.find((model) => model.name === selectedModel) ?? modelList[0] ?? fallbackModelList[0];
+  const selectedModelName = selectedModelInfo.name;
   const apiBaseUrl = "https://eelapi.com/api/v1";
+  const exampleModel = "deepseek-chat";
 
   const pythonCode = useMemo(() => {
     return `from openai import OpenAI
@@ -323,14 +388,14 @@ client = OpenAI(
 )
 
 completion = client.chat.completions.create(
-    model="gpt-4o-mini",
+    model="${exampleModel}",
     messages=[
         {"role": "user", "content": "你好"}
     ]
 )
 
 print(completion.choices[0].message.content)`;
-  }, [activeKey]);
+  }, [activeKey, apiBaseUrl, exampleModel]);
 
   const javascriptCode = useMemo(() => {
     return `fetch("${apiBaseUrl}/chat/completions", {
@@ -340,13 +405,13 @@ print(completion.choices[0].message.content)`;
     "Authorization": "Bearer ${activeKey}"
   },
   body: JSON.stringify({
-    model: "gpt-4o-mini",
+    model: "${exampleModel}",
     messages: [
       { role: "user", content: "你好" }
     ]
   })
 })`;
-  }, [activeKey]);
+  }, [activeKey, apiBaseUrl, exampleModel]);
 
   const resetDashboardData = useCallback(() => {
     setBalance(0);
@@ -360,6 +425,67 @@ print(completion.choices[0].message.content)`;
     setManualRechargeAmount("");
     setManualRechargeNote("");
     setManualRechargeMessage("");
+    setAdminModels([]);
+    setModelForm(emptyModelForm);
+    setEditingModelId("");
+    setAdminModelMessage("");
+  }, []);
+
+  const loadEnabledModels = useCallback(async () => {
+    if (!supabase) {
+      setModelsMessage("Supabase 未配置，暂时显示本地默认模型。");
+      setModelList(fallbackModelList);
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("models")
+        .select(
+          "id,name,upstream_model,display_name,provider,input_price_per_1k,output_price_per_1k,enabled,description,sort_order,created_at,updated_at"
+        )
+        .eq("enabled", true)
+        .order("sort_order", { ascending: true })
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        throw error;
+      }
+
+      const nextModels = ((data ?? []) as ModelRow[]).map((row) => mapModel(row));
+      setModelList(nextModels);
+      setModelsMessage(nextModels.length === 0 ? "当前没有启用的模型，请联系管理员启用模型。" : "");
+    } catch (error) {
+      console.error(error);
+      setModelList(fallbackModelList);
+      setModelsMessage("模型列表读取失败。请确认已经在 Supabase SQL Editor 执行最新 user-data-schema.sql。");
+    }
+  }, []);
+
+  const loadAdminModels = useCallback(async () => {
+    if (!supabase) {
+      setAdminModels([]);
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("models")
+        .select(
+          "id,name,upstream_model,display_name,provider,input_price_per_1k,output_price_per_1k,enabled,description,sort_order,created_at,updated_at"
+        )
+        .order("sort_order", { ascending: true })
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminModels(((data ?? []) as ModelRow[]).map((row) => mapModel(row)));
+    } catch (error) {
+      console.error(error);
+      setAdminModelMessage("模型管理数据读取失败，请确认 models 表和 RLS policy 已执行。");
+    }
   }, []);
 
   const loadDashboardData = useCallback(async (nextSession: Session) => {
@@ -424,6 +550,26 @@ print(completion.choices[0].message.content)`;
       setDataLoading(false);
     }
   }, [resetDashboardData]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadEnabledModels();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadEnabledModels]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (isAdmin) {
+        void loadAdminModels();
+      } else {
+        setAdminModels([]);
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [isAdmin, loadAdminModels]);
 
   useEffect(() => {
     if (!supabase) {
@@ -664,7 +810,7 @@ print(completion.choices[0].message.content)`;
     const total = promptTokens + completionTokens;
 
     setTestResult(
-      `演示回复：你的请求已通过 ${selectedModel} 处理。\n\n这是本地模拟结果，不会请求真实 AI API，也不会写入 usage_logs。\n\nTokens：${total}\n模拟费用：¥${cost.toFixed(4)}`
+      `演示回复：你的请求已通过 ${selectedModelName} 处理。\n\n这是本地模拟结果，不会请求真实 AI API，也不会写入 usage_logs。\n\nTokens：${total}\n模拟费用：¥${cost.toFixed(4)}`
     );
   };
 
@@ -718,6 +864,138 @@ print(completion.choices[0].message.content)`;
       setManualRechargeMessage(`充值失败：${getErrorMessage(error)}`);
     } finally {
       setManualRechargeSubmitting(false);
+    }
+  };
+
+  const resetModelForm = () => {
+    setModelForm(emptyModelForm);
+    setEditingModelId("");
+  };
+
+  const startEditModel = (model: ModelItem) => {
+    if (!model.id) {
+      return;
+    }
+
+    setEditingModelId(model.id);
+    setModelForm({
+      name: model.name,
+      displayName: model.label,
+      provider: model.provider,
+      upstreamModel: model.upstreamModel,
+      inputPrice: String(model.inputPricePer1K),
+      outputPrice: String(model.outputPricePer1K),
+      enabled: model.enabled,
+      description: model.desc === "暂无说明。" ? "" : model.desc,
+      sortOrder: String(model.sortOrder),
+    });
+    setAdminModelMessage(`正在编辑模型：${model.name}`);
+  };
+
+  const handleModelSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAdminModelMessage("");
+
+    if (!supabase || !session || !isAdmin) {
+      setAdminModelMessage("只有管理员可以管理模型价格。");
+      return;
+    }
+
+    const name = modelForm.name.trim();
+    const displayName = modelForm.displayName.trim();
+    const upstreamModel = modelForm.upstreamModel.trim();
+    const provider = modelForm.provider.trim() || "deepseek";
+    const inputPrice = Number(modelForm.inputPrice);
+    const outputPrice = Number(modelForm.outputPrice);
+    const sortOrder = Number(modelForm.sortOrder || 100);
+    const description = modelForm.description.trim() || null;
+
+    if (!name || !displayName || !upstreamModel) {
+      setAdminModelMessage("请填写 model name、展示名称和上游模型名。");
+      return;
+    }
+
+    if (
+      !Number.isFinite(inputPrice) ||
+      inputPrice < 0 ||
+      !Number.isFinite(outputPrice) ||
+      outputPrice < 0
+    ) {
+      setAdminModelMessage("模型价格必须是大于等于 0 的数字。");
+      return;
+    }
+
+    setModelSubmitting(true);
+
+    try {
+      const payload = {
+        upstream_model: upstreamModel,
+        display_name: displayName,
+        provider,
+        input_price_per_1k: inputPrice,
+        output_price_per_1k: outputPrice,
+        enabled: modelForm.enabled,
+        description,
+        sort_order: Number.isFinite(sortOrder) ? sortOrder : 100,
+      };
+
+      if (editingModelId) {
+        const { error } = await supabase.from("models").update(payload).eq("id", editingModelId);
+
+        if (error) {
+          throw error;
+        }
+
+        setAdminModelMessage(`模型已更新：${name}`);
+      } else {
+        const { error } = await supabase.from("models").insert({
+          name,
+          ...payload,
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        setAdminModelMessage(`模型已新增：${name}`);
+      }
+
+      resetModelForm();
+      await Promise.all([loadEnabledModels(), loadAdminModels()]);
+    } catch (error) {
+      console.error(error);
+      setAdminModelMessage(`模型保存失败：${getErrorMessage(error)}`);
+    } finally {
+      setModelSubmitting(false);
+    }
+  };
+
+  const toggleModelEnabled = async (model: ModelItem) => {
+    if (!supabase || !session || !isAdmin || !model.id) {
+      setAdminModelMessage("只有管理员可以启用或禁用模型。");
+      return;
+    }
+
+    setModelSubmitting(true);
+    setAdminModelMessage("");
+
+    try {
+      const { error } = await supabase
+        .from("models")
+        .update({ enabled: !model.enabled })
+        .eq("id", model.id);
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminModelMessage(`${model.name} 已${model.enabled ? "禁用" : "启用"}。`);
+      await Promise.all([loadEnabledModels(), loadAdminModels()]);
+    } catch (error) {
+      console.error(error);
+      setAdminModelMessage(`状态更新失败：${getErrorMessage(error)}`);
+    } finally {
+      setModelSubmitting(false);
     }
   };
 
@@ -1001,7 +1279,7 @@ print(completion.choices[0].message.content)`;
                 <CardContent className="p-6">
                   <label className="text-sm text-slate-300">选择模型</label>
                   <select
-                    value={selectedModel}
+                    value={selectedModelName}
                     onChange={(event) => setSelectedModel(event.target.value)}
                     className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
                   >
@@ -1032,6 +1310,11 @@ print(completion.choices[0].message.content)`;
           {activeDashboardTab === "models" ? (
             <div>
               <SectionTitle label="Models" title="模型列表" desc="这里展示对外模型别名、价格和路由说明。" />
+              {modelsMessage ? (
+                <div className="mb-5 rounded-2xl border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                  {modelsMessage}
+                </div>
+              ) : null}
               <div className="grid gap-4 lg:grid-cols-2">
                 {modelList.map((model) => (
                   <Card key={model.name} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
@@ -1053,6 +1336,11 @@ print(completion.choices[0].message.content)`;
                   </Card>
                 ))}
               </div>
+              {modelList.length === 0 ? (
+                <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
+                  暂无启用模型，请联系管理员在模型价格管理里启用。
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -1167,12 +1455,15 @@ print(completion.choices[0].message.content)`;
                     </div>
                     <div className="rounded-2xl bg-slate-950/60 p-4">
                       <p className="text-sm text-slate-400">模型名</p>
-                      <p className="mt-2 font-mono text-cyan-300">{selectedModel}</p>
+                      <p className="mt-2 font-mono text-cyan-300">{selectedModelName}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-950/60 p-4">
                       <p className="text-sm text-slate-400">接口</p>
                       <p className="mt-2 font-mono text-cyan-300">/chat/completions</p>
                     </div>
+                  </div>
+                  <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm leading-6 text-slate-300">
+                    model 必须使用平台支持并启用的模型名，例如 <span className="font-mono text-cyan-300">deepseek-chat</span>。不同模型的输入和输出价格可能不同，实际扣费按上游返回的 usage 计算。
                   </div>
                   <div className="mt-6 flex items-center justify-between gap-3">
                     <h3 className="text-lg font-bold">JavaScript fetch 示例</h3>
@@ -1198,7 +1489,7 @@ print(completion.choices[0].message.content)`;
                     <h3 className="text-lg font-bold">常见错误码</h3>
                     <div className="mt-4 grid gap-3 text-sm text-slate-300 md:grid-cols-2">
                       {[
-                        ["400", "暂不支持 stream，或 messages / max_tokens 超过限制"],
+                        ["400", "暂不支持 stream、请求超限，或 model not supported or disabled"],
                         ["401", "缺少或无效 API Key"],
                         ["402", "余额不足"],
                         ["429", "请求过快：每个 API Key 每分钟最多 20 次"],
@@ -1273,15 +1564,204 @@ print(completion.choices[0].message.content)`;
                   ) : null}
                 </CardContent>
               </Card>
+              <Card className="mb-6 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-xl font-bold">模型价格管理</h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-400">
+                        这里管理平台对外 model name、上游模型名、输入/输出价格和启用状态。禁用模型后，API 中转会返回 400。
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={resetModelForm}
+                      variant="outline"
+                      className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10"
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      新增模型
+                    </Button>
+                  </div>
+
+                  <form onSubmit={handleModelSubmit} className="grid gap-4 lg:grid-cols-4">
+                    <div>
+                      <label className="text-sm text-slate-300">model name</label>
+                      <input
+                        value={modelForm.name}
+                        disabled={Boolean(editingModelId)}
+                        onChange={(event) => setModelForm((form) => ({ ...form, name: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-sm text-white outline-none focus:border-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+                        placeholder="deepseek-chat"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">展示名称</label>
+                      <input
+                        value={modelForm.displayName}
+                        onChange={(event) => setModelForm((form) => ({ ...form, displayName: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="DeepSeek Chat"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">provider</label>
+                      <input
+                        value={modelForm.provider}
+                        onChange={(event) => setModelForm((form) => ({ ...form, provider: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="deepseek"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">上游模型名</label>
+                      <input
+                        value={modelForm.upstreamModel}
+                        onChange={(event) => setModelForm((form) => ({ ...form, upstreamModel: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-sm text-white outline-none focus:border-cyan-300"
+                        placeholder="deepseek-chat"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">输入价格 / 1K</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.0001"
+                        value={modelForm.inputPrice}
+                        onChange={(event) => setModelForm((form) => ({ ...form, inputPrice: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">输出价格 / 1K</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.0001"
+                        value={modelForm.outputPrice}
+                        onChange={(event) => setModelForm((form) => ({ ...form, outputPrice: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">排序</label>
+                      <input
+                        type="number"
+                        step="1"
+                        value={modelForm.sortOrder}
+                        onChange={(event) => setModelForm((form) => ({ ...form, sortOrder: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      />
+                    </div>
+                    <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-200 lg:mt-7">
+                      <input
+                        type="checkbox"
+                        checked={modelForm.enabled}
+                        onChange={(event) => setModelForm((form) => ({ ...form, enabled: event.target.checked }))}
+                        className="h-4 w-4"
+                      />
+                      启用模型
+                    </label>
+                    <div className="lg:col-span-4">
+                      <label className="text-sm text-slate-300">说明</label>
+                      <textarea
+                        value={modelForm.description}
+                        onChange={(event) => setModelForm((form) => ({ ...form, description: event.target.value }))}
+                        className="mt-2 min-h-20 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="适合通用聊天、写作、代码和轻量分析。"
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-3 lg:col-span-4">
+                      <Button
+                        type="submit"
+                        disabled={modelSubmitting}
+                        className="rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {modelSubmitting ? "保存中..." : editingModelId ? "保存修改" : "新增模型"}
+                      </Button>
+                      {editingModelId ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={resetModelForm}
+                          className="text-slate-200 hover:bg-white/10 hover:text-white"
+                        >
+                          取消编辑
+                        </Button>
+                      ) : null}
+                    </div>
+                  </form>
+
+                  {adminModelMessage ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                      {adminModelMessage}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-6 overflow-x-auto">
+                    <table className="w-full min-w-[860px] text-left text-sm">
+                      <thead className="text-slate-400">
+                        <tr className="border-b border-white/10">
+                          <th className="py-3">model</th>
+                          <th className="py-3">展示名称</th>
+                          <th className="py-3">provider</th>
+                          <th className="py-3">上游</th>
+                          <th className="py-3">输入</th>
+                          <th className="py-3">输出</th>
+                          <th className="py-3">状态</th>
+                          <th className="py-3">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminModels.map((model) => (
+                          <tr key={model.id ?? model.name} className="border-b border-white/5">
+                            <td className="py-3 font-mono text-cyan-300">{model.name}</td>
+                            <td className="py-3 text-slate-300">{model.label}</td>
+                            <td className="py-3 text-slate-300">{model.provider}</td>
+                            <td className="py-3 font-mono text-xs text-slate-300">{model.upstreamModel}</td>
+                            <td className="py-3 text-slate-300">{model.inputPrice}</td>
+                            <td className="py-3 text-slate-300">{model.outputPrice}</td>
+                            <td className={model.enabled ? "py-3 text-emerald-300" : "py-3 text-amber-300"}>
+                              {model.enabled ? "启用" : "禁用"}
+                            </td>
+                            <td className="py-3">
+                              <div className="flex gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => startEditModel(model)}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  编辑
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={modelSubmitting}
+                                  onClick={() => void toggleModelEnabled(model)}
+                                  className="hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {model.enabled ? "禁用" : "启用"}
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {adminModels.length === 0 ? (
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
+                        暂无模型数据。请先在 Supabase SQL Editor 执行最新 user-data-schema.sql。
+                      </div>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
               <div className="grid gap-4 md:grid-cols-3">
-                {[
-                  "用户管理",
-                  "模型价格管理",
-                  "供应商线路",
-                  "财务统计",
-                  "异常请求",
-                  "系统监控",
-                ].map((item) => (
+                {["用户管理", "供应商线路", "财务统计", "异常请求", "系统监控"].map((item) => (
                   <Card key={item} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                     <CardContent className="p-6">
                       <Settings className="mb-4 h-6 w-6 text-cyan-300" />

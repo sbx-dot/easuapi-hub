@@ -10,6 +10,8 @@ EasyAPI Hub is a Next.js demo for an AI API gateway dashboard. This version keep
 - User balance, API Key list, orders, and usage logs read from Supabase tables
 - API Key creation stores only a prefix and SHA-256 hash
 - OpenAI-compatible JSON relay endpoint at `/api/v1/chat/completions`
+- Model names and token prices are managed in the Supabase `models` table
+- Admins can add, edit, enable, and disable models from the dashboard
 - No real payment integration yet
 - No streaming relay yet
 
@@ -35,14 +37,15 @@ Create a local `.env.local` file based on `.env.example`:
 NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
 SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
-UPSTREAM_BASE_URL=https://api.openai.com/v1
+UPSTREAM_BASE_URL=https://api.deepseek.com/v1
 UPSTREAM_API_KEY=your-upstream-api-key
-UPSTREAM_DEFAULT_MODEL=gpt-4o-mini
+UPSTREAM_DEFAULT_MODEL=deepseek-chat
 API_PRICE_PER_1K_TOKENS=0.01
 ```
 
 `NEXT_PUBLIC_SUPABASE_URL` must be the project base URL only. Do not include `/rest/v1`, `/auth/v1`, or any other path.
 `SUPABASE_SERVICE_ROLE_KEY` and `UPSTREAM_API_KEY` are server-only secrets. Never prefix them with `NEXT_PUBLIC_`, never put them in browser code, and never commit real values to GitHub.
+`API_PRICE_PER_1K_TOKENS` is now only a fallback. The main pricing source is the Supabase `models` table.
 
 For Netlify, add the same variables in:
 
@@ -68,13 +71,21 @@ Run the SQL in `supabase/user-data-schema.sql` inside the Supabase SQL Editor. I
 - `api_keys`
 - `orders`
 - `usage_logs`
+- `models`
 
 It also enables Row Level Security, adds user-only read policies, allows users to create and revoke their own API keys, and creates a trigger that automatically inserts a `profiles` row when a new auth user signs up.
 It also adds an index on `api_keys.key_hash`, used by the API relay to validate user API keys.
+The `models` table stores the public model name, upstream model name, provider, enabled status, display text, and separate input/output token prices.
+
+Default models inserted by the SQL:
+
+- `deepseek-chat`
+- `deepseek-reasoner`
 
 ### Admin Manual Recharge
 
 The same SQL file also creates the `manual_recharge` RPC function. It lets only users with `profiles.role = 'admin'` manually add balance to another user and create a paid order record.
+Admins can also manage model prices in the dashboard. RLS allows normal users to read only enabled models, while admins can read all models and insert/update model rows.
 
 To make your own account an admin, run this in the Supabase SQL Editor after your account has signed up and has a `profiles` row:
 
@@ -104,7 +115,7 @@ fetch("https://eelapi.com/api/v1/chat/completions", {
     "Authorization": "Bearer 用户自己的API_KEY"
   },
   body: JSON.stringify({
-    model: "gpt-4o-mini",
+    model: "deepseek-chat",
     messages: [
       { role: "user", content: "你好" }
     ]
@@ -123,7 +134,7 @@ client = OpenAI(
 )
 
 completion = client.chat.completions.create(
-    model="gpt-4o-mini",
+    model="deepseek-chat",
     messages=[
         {"role": "user", "content": "你好"}
     ]
@@ -132,7 +143,14 @@ completion = client.chat.completions.create(
 print(completion.choices[0].message.content)
 ```
 
-The first version rejects `stream=true`, does not store user prompts, records usage tokens when the upstream returns `usage`, and deducts balance using `API_PRICE_PER_1K_TOKENS`.
+The first version rejects `stream=true`, does not store user prompts, records usage tokens when the upstream returns `usage`, and deducts balance from the `models` table prices:
+
+```txt
+cost = prompt_tokens / 1000 * input_price_per_1k
+     + completion_tokens / 1000 * output_price_per_1k
+```
+
+The request `model` must match an enabled platform model name, such as `deepseek-chat`. The relay forwards `models.upstream_model` to the upstream provider.
 
 Safety limits in the first version:
 
@@ -143,7 +161,7 @@ Safety limits in the first version:
 
 Common errors:
 
-- `400`: stream is unsupported, or request limits were exceeded.
+- `400`: stream is unsupported, request limits were exceeded, or the model is not supported/disabled.
 - `401`: missing or invalid API Key.
 - `402`: insufficient balance.
 - `429`: too many requests.
