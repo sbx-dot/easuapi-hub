@@ -2,6 +2,7 @@
 
 import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import Image from "next/image";
 import type { Session } from "@supabase/supabase-js";
 import {
   Activity,
@@ -22,7 +23,6 @@ import {
   Plus,
   Settings,
   ShieldCheck,
-  Sparkles,
   Trash2,
   User,
   Wallet,
@@ -461,6 +461,30 @@ function SectionTitle({
       <h2 className="mt-2 text-2xl font-black sm:text-3xl">{title}</h2>
       {desc ? <p className="mt-3 text-slate-400">{desc}</p> : null}
     </div>
+  );
+}
+
+function BrandMark({ className = "" }: { className?: string }) {
+  const [logoFailed, setLogoFailed] = useState(false);
+
+  return (
+    <span className={`flex items-center gap-2 ${className}`}>
+      <span className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-cyan-300/25 bg-cyan-300/10 shadow-[0_0_18px_rgba(34,211,238,0.16)]">
+        {logoFailed ? (
+          <span className="text-lg leading-none">⚡</span>
+        ) : (
+          <Image
+            src="/logo-eelapi.png"
+            alt=""
+            width={36}
+            height={36}
+            className="h-full w-full object-contain"
+            onError={() => setLogoFailed(true)}
+          />
+        )}
+      </span>
+      <span className="text-lg font-bold">电鳗 eelapi</span>
+    </span>
   );
 }
 
@@ -1411,10 +1435,13 @@ print(completion.choices[0].message.content)`;
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4">
       <Card className="w-full max-w-md rounded-3xl border-white/10 bg-slate-900 text-white shadow-2xl">
         <CardContent className="p-6">
-          <div className="mb-5 flex items-center justify-between">
-            <h2 className="text-2xl font-bold">
-              {authMode === "login" ? "登录控制台" : "注册账号"}
-            </h2>
+          <div className="mb-5 flex items-start justify-between gap-4">
+            <div>
+              <BrandMark />
+              <h2 className="mt-4 text-2xl font-bold">
+                {authMode === "login" ? "登录控制台" : "注册账号"}
+              </h2>
+            </div>
             <button onClick={closeLoginDialog} type="button">
               <X className="h-5 w-5" />
             </button>
@@ -1501,7 +1528,7 @@ print(completion.choices[0].message.content)`;
         <Button
           type="button"
           onClick={() => setFunctionNavOpen(true)}
-          className="fixed right-4 top-28 z-40 rounded-2xl border border-cyan-300/30 bg-slate-900/90 text-white shadow-[0_0_24px_rgba(34,211,238,0.18)] backdrop-blur-xl hover:bg-slate-800"
+          className="fixed left-4 top-28 z-40 rounded-2xl border border-cyan-300/30 bg-slate-900/90 text-white shadow-[0_0_24px_rgba(34,211,238,0.18)] backdrop-blur-xl hover:bg-slate-800"
         >
           <Menu className="mr-2 h-4 w-4" />
           功能导航
@@ -1521,8 +1548,8 @@ print(completion.choices[0].message.content)`;
             }`}
           />
           <aside
-            className={`absolute right-0 top-0 flex h-full w-[85vw] flex-col border-l border-cyan-300/20 bg-slate-950/90 shadow-2xl shadow-cyan-950/40 backdrop-blur-2xl transition-transform duration-300 sm:w-[420px] lg:w-[25vw] ${
-              functionNavOpen ? "translate-x-0" : "translate-x-full"
+            className={`absolute left-0 top-0 flex h-full w-[85vw] flex-col border-r border-cyan-300/20 bg-slate-950/90 shadow-2xl shadow-cyan-950/40 backdrop-blur-2xl transition-transform duration-300 sm:w-[420px] lg:w-[25vw] ${
+              functionNavOpen ? "translate-x-0" : "-translate-x-full"
             }`}
           >
             <div className="flex items-start justify-between gap-4 border-b border-white/10 p-5">
@@ -1565,10 +1592,7 @@ print(completion.choices[0].message.content)`;
         <header className="relative z-10 border-b border-white/10 bg-slate-950/75 backdrop-blur-xl">
           <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
             <button onClick={() => setPage("home")} className="flex items-center gap-2">
-              <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white text-slate-950">
-                <Sparkles className="h-5 w-5" />
-              </div>
-              <span className="text-lg font-bold">EasyAPI Hub</span>
+              <BrandMark />
             </button>
             <div className="flex items-center gap-3">
               <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300 sm:flex">
@@ -2825,10 +2849,7 @@ print(completion.choices[0].message.content)`;
       <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/75 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <a href="#" className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white text-slate-950">
-              <Sparkles className="h-5 w-5" />
-            </div>
-            <span className="text-lg font-bold">EasyAPI Hub</span>
+            <BrandMark />
           </a>
           <nav className="hidden items-center gap-8 md:flex">
             {navItems.map((item) => (
@@ -2885,7 +2906,7 @@ print(completion.choices[0].message.content)`;
               <span className="block bg-gradient-to-r from-cyan-300 to-violet-300 bg-clip-text text-transparent">多模型 API 中转站</span>
             </h1>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-300">
-              EasyAPI Hub 提供统一 Base URL、统一 API Key、统一账单和统一模型路由。用户只需要改一行配置，就能调用主流 AI 模型。
+              电鳗 eelapi 提供统一 Base URL、统一 API Key、统一账单和统一模型路由。用户只需要改一行配置，就能调用主流 AI 模型。
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Button
@@ -3002,7 +3023,7 @@ print(completion.choices[0].message.content)`;
         <section id="接入代码" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
           <div className="grid gap-8 lg:grid-cols-2 lg:items-center">
             <div>
-              <SectionTitle label="接入代码" title="只改 base_url，即可开始调用" desc="平台兼容 OpenAI SDK。用户原来怎么调用 OpenAI，现在就怎么调用 EasyAPI Hub。" />
+              <SectionTitle label="接入代码" title="只改 base_url，即可开始调用" desc="平台兼容 OpenAI SDK。用户原来怎么调用 OpenAI，现在就怎么调用电鳗。" />
             </div>
             <Card className="overflow-hidden rounded-3xl border-white/10 bg-slate-900 text-white">
               <CardContent className="p-0">
@@ -3046,7 +3067,7 @@ print(completion.choices[0].message.content)`;
       </main>
 
       <footer className="relative z-10 border-t border-white/10 px-4 py-8 text-center text-sm text-slate-400 sm:px-6 lg:px-8">
-        © 2026 EasyAPI Hub. Built for developers and beginners.
+        © 2026 电鳗 eelapi. Built for developers and beginners.
       </footer>
     </div>
   );

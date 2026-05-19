@@ -2,8 +2,13 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "EasyAPI Hub",
-  description: "多模型 AI API 聚合网关演示控制台",
+  title: "电鳗 eelapi",
+  description: "电鳗 eelapi 多模型 AI API 聚合网关演示控制台",
+  icons: {
+    icon: "/logo-eelapi.png",
+    shortcut: "/logo-eelapi.png",
+    apple: "/logo-eelapi.png",
+  },
 };
 
 export default function RootLayout({

@@ -1,6 +1,6 @@
-# EasyAPI Hub
+# 电鳗 eelapi
 
-EasyAPI Hub is a Next.js demo for an AI API gateway dashboard. This version keeps the API Key, recharge, order, and playground features as local demos, and adds a first real login/register flow with Supabase Auth.
+电鳗 eelapi is a Next.js demo for an AI API gateway dashboard. This version keeps the API Key, recharge, order, and playground features as local demos, and adds a first real login/register flow with Supabase Auth.
 
 ## Current Scope
 
