@@ -207,6 +207,63 @@ type SupplierFormState = {
   notes: string;
 };
 
+type AdminUserRoleFilter = "all" | "admin" | "user";
+type AdminUserSort = "balance_desc" | "balance_asc" | "last_usage_desc" | "last_usage_asc";
+type AdminUserDetailView = "apiKeys" | "usage" | "orders";
+type BalanceAdjustMode = "increase" | "decrease";
+
+type AdminUserRow = {
+  user_id: string;
+  email: string | null;
+  role: string | null;
+  balance: number | string | null;
+  api_key_count: number | string | null;
+  total_recharge_amount: number | string | null;
+  total_spend_amount: number | string | null;
+  last_usage_at: string | null;
+  created_at: string;
+};
+
+type AdminUserItem = {
+  id: string;
+  email: string;
+  role: string;
+  balance: number;
+  apiKeyCount: number;
+  totalRecharge: number;
+  totalSpend: number;
+  lastUsageAt: string | null;
+  createdAt: string;
+};
+
+type AdminUserApiKeyRow = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  revoked: boolean;
+  created_at: string;
+};
+
+type AdminUserUsageRow = {
+  id: string;
+  model: string | null;
+  supplier_name: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  cost: number | string | null;
+  status: string | null;
+  created_at: string;
+};
+
+type AdminUserOrderRow = {
+  id: string;
+  amount: number | string | null;
+  method: string | null;
+  status: string | null;
+  note: string | null;
+  created_at: string;
+};
+
 const API_KEY_PREFIX_LENGTH = 16;
 
 const emptyModelForm: ModelFormState = {
@@ -434,6 +491,40 @@ function supplierToForm(supplier: SupplierItem): SupplierFormState {
   };
 }
 
+function mapAdminUser(row: AdminUserRow): AdminUserItem {
+  return {
+    id: row.user_id,
+    email: row.email ?? "未设置邮箱",
+    role: row.role ?? "user",
+    balance: Number(row.balance ?? 0),
+    apiKeyCount: Number(row.api_key_count ?? 0),
+    totalRecharge: Number(row.total_recharge_amount ?? 0),
+    totalSpend: Number(row.total_spend_amount ?? 0),
+    lastUsageAt: row.last_usage_at,
+    createdAt: row.created_at,
+  };
+}
+
+function parseAdminUserSort(sort: AdminUserSort) {
+  if (sort === "balance_asc") {
+    return { sortKey: "balance", sortDirection: "asc" };
+  }
+
+  if (sort === "last_usage_desc") {
+    return { sortKey: "last_usage_at", sortDirection: "desc" };
+  }
+
+  if (sort === "last_usage_asc") {
+    return { sortKey: "last_usage_at", sortDirection: "asc" };
+  }
+
+  return { sortKey: "balance", sortDirection: "desc" };
+}
+
+function formatNullableDateTime(value: string | null) {
+  return value ? formatDateTime(value) : "暂无";
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
@@ -526,6 +617,24 @@ export default function EasyApiHubPage() {
   const [modelList, setModelList] = useState<ModelItem[]>(fallbackModelList);
   const [adminModels, setAdminModels] = useState<ModelItem[]>([]);
   const [adminSuppliers, setAdminSuppliers] = useState<SupplierItem[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUserItem[]>([]);
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false);
+  const [adminUsersMessage, setAdminUsersMessage] = useState("");
+  const [userSearch, setUserSearch] = useState("");
+  const [userRoleFilter, setUserRoleFilter] = useState<AdminUserRoleFilter>("all");
+  const [userSort, setUserSort] = useState<AdminUserSort>("balance_desc");
+  const [selectedAdminUser, setSelectedAdminUser] = useState<AdminUserItem | null>(null);
+  const [adminUserDetailView, setAdminUserDetailView] = useState<AdminUserDetailView | null>(null);
+  const [adminUserApiKeys, setAdminUserApiKeys] = useState<AdminUserApiKeyRow[]>([]);
+  const [adminUserUsageLogs, setAdminUserUsageLogs] = useState<AdminUserUsageRow[]>([]);
+  const [adminUserOrders, setAdminUserOrders] = useState<AdminUserOrderRow[]>([]);
+  const [adminUserDetailLoading, setAdminUserDetailLoading] = useState(false);
+  const [userRoleSubmittingId, setUserRoleSubmittingId] = useState("");
+  const [balanceAdjustUser, setBalanceAdjustUser] = useState<AdminUserItem | null>(null);
+  const [balanceAdjustMode, setBalanceAdjustMode] = useState<BalanceAdjustMode>("increase");
+  const [balanceAdjustAmount, setBalanceAdjustAmount] = useState("");
+  const [balanceAdjustNote, setBalanceAdjustNote] = useState("");
+  const [balanceAdjustSubmitting, setBalanceAdjustSubmitting] = useState(false);
   const [modelsMessage, setModelsMessage] = useState("");
   const [modelForm, setModelForm] = useState<ModelFormState>(emptyModelForm);
   const [editModelForm, setEditModelForm] = useState<ModelFormState>(emptyModelForm);
@@ -607,6 +716,24 @@ print(completion.choices[0].message.content)`;
     setManualRechargeMessage("");
     setAdminModels([]);
     setAdminSuppliers([]);
+    setAdminUsers([]);
+    setAdminUsersLoading(false);
+    setAdminUsersMessage("");
+    setUserSearch("");
+    setUserRoleFilter("all");
+    setUserSort("balance_desc");
+    setSelectedAdminUser(null);
+    setAdminUserDetailView(null);
+    setAdminUserApiKeys([]);
+    setAdminUserUsageLogs([]);
+    setAdminUserOrders([]);
+    setAdminUserDetailLoading(false);
+    setUserRoleSubmittingId("");
+    setBalanceAdjustUser(null);
+    setBalanceAdjustMode("increase");
+    setBalanceAdjustAmount("");
+    setBalanceAdjustNote("");
+    setBalanceAdjustSubmitting(false);
     setModelForm(emptyModelForm);
     setEditModelForm(emptyModelForm);
     setEditingModelId("");
@@ -694,6 +821,36 @@ print(completion.choices[0].message.content)`;
     }
   }, []);
 
+  const loadAdminUsers = useCallback(async () => {
+    if (!supabase) {
+      setAdminUsers([]);
+      return;
+    }
+
+    const { sortKey, sortDirection } = parseAdminUserSort(userSort);
+    setAdminUsersLoading(true);
+
+    try {
+      const { data, error } = await supabase.rpc("list_users_admin", {
+        search_email: userSearch.trim() || null,
+        role_filter: userRoleFilter,
+        sort_key: sortKey,
+        sort_direction: sortDirection,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminUsers(((data ?? []) as AdminUserRow[]).map((row) => mapAdminUser(row)));
+    } catch (error) {
+      console.error(error);
+      setAdminUsersMessage("用户管理数据读取失败，请确认 list_users_admin RPC 已执行。");
+    } finally {
+      setAdminUsersLoading(false);
+    }
+  }, [userRoleFilter, userSearch, userSort]);
+
   const loadDashboardData = useCallback(async (nextSession: Session) => {
     if (!supabase) {
       resetDashboardData();
@@ -777,6 +934,18 @@ print(completion.choices[0].message.content)`;
 
     return () => window.clearTimeout(timer);
   }, [isAdmin, loadAdminModels, loadAdminSuppliers]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (isAdmin) {
+        void loadAdminUsers();
+      } else {
+        setAdminUsers([]);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [isAdmin, loadAdminUsers]);
 
   useEffect(() => {
     if (!supabase) {
@@ -1095,6 +1264,160 @@ print(completion.choices[0].message.content)`;
       setManualRechargeMessage(`充值失败：${getErrorMessage(error)}`);
     } finally {
       setManualRechargeSubmitting(false);
+    }
+  };
+
+  const updateAdminUserRole = async (user: AdminUserItem, nextRole: "admin" | "user") => {
+    setAdminUsersMessage("");
+
+    if (!supabase || !session || !isAdmin) {
+      setAdminUsersMessage("只有管理员可以修改用户角色。");
+      return;
+    }
+
+    setUserRoleSubmittingId(user.id);
+
+    try {
+      const { error } = await supabase.rpc("set_user_role_admin", {
+        target_user_id: user.id,
+        target_role: nextRole,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminUsersMessage(`${user.email} 已设为 ${nextRole}。`);
+      await Promise.all([loadAdminUsers(), loadDashboardData(session)]);
+    } catch (error) {
+      console.error(error);
+      setAdminUsersMessage(`角色更新失败：${getErrorMessage(error)}`);
+    } finally {
+      setUserRoleSubmittingId("");
+    }
+  };
+
+  const startBalanceAdjust = (user: AdminUserItem, mode: BalanceAdjustMode) => {
+    setBalanceAdjustUser(user);
+    setBalanceAdjustMode(mode);
+    setBalanceAdjustAmount("");
+    setBalanceAdjustNote("");
+    setAdminUsersMessage(`正在${mode === "increase" ? "增加" : "减少"} ${user.email} 的余额。`);
+  };
+
+  const cancelBalanceAdjust = () => {
+    setBalanceAdjustUser(null);
+    setBalanceAdjustAmount("");
+    setBalanceAdjustNote("");
+  };
+
+  const submitBalanceAdjust = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAdminUsersMessage("");
+
+    if (!supabase || !session || !isAdmin || !balanceAdjustUser) {
+      setAdminUsersMessage("只有管理员可以调整余额。");
+      return;
+    }
+
+    const parsedAmount = Number(balanceAdjustAmount);
+    const note = balanceAdjustNote.trim();
+
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setAdminUsersMessage("请输入大于 0 的调整金额。");
+      return;
+    }
+
+    if (!note) {
+      setAdminUsersMessage("调整余额必须填写备注。");
+      return;
+    }
+
+    const adjustmentAmount = balanceAdjustMode === "increase" ? parsedAmount : -parsedAmount;
+    setBalanceAdjustSubmitting(true);
+
+    try {
+      const { error } = await supabase.rpc("adjust_user_balance_admin", {
+        target_user_id: balanceAdjustUser.id,
+        adjustment_amount: adjustmentAmount,
+        adjustment_note: note,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminUsersMessage(
+        `${balanceAdjustUser.email} 余额已${balanceAdjustMode === "increase" ? "增加" : "减少"} ¥${parsedAmount.toFixed(2)}。`
+      );
+      cancelBalanceAdjust();
+      await Promise.all([loadAdminUsers(), loadDashboardData(session)]);
+    } catch (error) {
+      console.error(error);
+      setAdminUsersMessage(`余额调整失败：${getErrorMessage(error)}`);
+    } finally {
+      setBalanceAdjustSubmitting(false);
+    }
+  };
+
+  const openAdminUserDetail = async (user: AdminUserItem, view: AdminUserDetailView) => {
+    setSelectedAdminUser(user);
+    setAdminUserDetailView(view);
+    setAdminUsersMessage("");
+    setAdminUserApiKeys([]);
+    setAdminUserUsageLogs([]);
+    setAdminUserOrders([]);
+
+    if (!supabase || !isAdmin) {
+      setAdminUsersMessage("只有管理员可以查看用户详情。");
+      return;
+    }
+
+    setAdminUserDetailLoading(true);
+
+    try {
+      if (view === "apiKeys") {
+        const { data, error } = await supabase.rpc("list_user_api_keys_admin", {
+          target_user_id: user.id,
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        setAdminUserApiKeys((data ?? []) as AdminUserApiKeyRow[]);
+      }
+
+      if (view === "usage") {
+        const { data, error } = await supabase.rpc("list_user_usage_logs_admin", {
+          target_user_id: user.id,
+          limit_count: 20,
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        setAdminUserUsageLogs((data ?? []) as AdminUserUsageRow[]);
+      }
+
+      if (view === "orders") {
+        const { data, error } = await supabase.rpc("list_user_orders_admin", {
+          target_user_id: user.id,
+          limit_count: 20,
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        setAdminUserOrders((data ?? []) as AdminUserOrderRow[]);
+      }
+    } catch (error) {
+      console.error(error);
+      setAdminUsersMessage(`用户详情读取失败：${getErrorMessage(error)}`);
+    } finally {
+      setAdminUserDetailLoading(false);
     }
   };
 
@@ -2062,6 +2385,360 @@ print(completion.choices[0].message.content)`;
                   ) : null}
                 </CardContent>
               </Card>
+              <Card id="users" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-xl font-bold">用户管理</h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-400">
+                        查看所有用户的角色、余额、API Key、充值、消费和最近调用概况。所有数据通过 admin RPC 读取，不暴露 service role key。
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={() => void loadAdminUsers()}
+                      disabled={adminUsersLoading}
+                      variant="outline"
+                      className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {adminUsersLoading ? "刷新中..." : "刷新用户"}
+                    </Button>
+                  </div>
+
+                  <div className="mb-5 grid gap-4 lg:grid-cols-[1.2fr_0.7fr_0.9fr]">
+                    <div>
+                      <label className="text-sm text-slate-300">按邮箱搜索</label>
+                      <input
+                        value={userSearch}
+                        onChange={(event) => setUserSearch(event.target.value)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="user@example.com"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">角色筛选</label>
+                      <select
+                        value={userRoleFilter}
+                        onChange={(event) => setUserRoleFilter(event.target.value as AdminUserRoleFilter)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="all">全部</option>
+                        <option value="admin">admin</option>
+                        <option value="user">user</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">排序</label>
+                      <select
+                        value={userSort}
+                        onChange={(event) => setUserSort(event.target.value as AdminUserSort)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="balance_desc">余额高到低</option>
+                        <option value="balance_asc">余额低到高</option>
+                        <option value="last_usage_desc">最近调用时间新到旧</option>
+                        <option value="last_usage_asc">最近调用时间旧到新</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {adminUsersMessage ? (
+                    <div className="mb-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                      {adminUsersMessage}
+                    </div>
+                  ) : null}
+
+                  {balanceAdjustUser ? (
+                    <form
+                      onSubmit={submitBalanceAdjust}
+                      className="mb-5 grid gap-4 rounded-2xl border border-cyan-300/20 bg-slate-950/70 p-4 lg:grid-cols-[0.8fr_0.7fr_1.4fr_auto_auto] lg:items-end"
+                    >
+                      <div>
+                        <p className="text-sm text-slate-400">调整用户</p>
+                        <p className="mt-2 truncate font-mono text-sm text-cyan-200">{balanceAdjustUser.email}</p>
+                      </div>
+                      <div>
+                        <label className="text-sm text-slate-300">方式</label>
+                        <select
+                          value={balanceAdjustMode}
+                          onChange={(event) => setBalanceAdjustMode(event.target.value as BalanceAdjustMode)}
+                          className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        >
+                          <option value="increase">增加余额</option>
+                          <option value="decrease">减少余额</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-sm text-slate-300">金额</label>
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={balanceAdjustAmount}
+                          onChange={(event) => setBalanceAdjustAmount(event.target.value)}
+                          className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                          placeholder="10"
+                        />
+                      </div>
+                      <div className="lg:col-span-2">
+                        <label className="text-sm text-slate-300">备注</label>
+                        <input
+                          value={balanceAdjustNote}
+                          onChange={(event) => setBalanceAdjustNote(event.target.value)}
+                          className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                          placeholder="必须填写调整原因"
+                        />
+                      </div>
+                      <Button
+                        type="submit"
+                        disabled={balanceAdjustSubmitting}
+                        className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {balanceAdjustSubmitting ? "保存中..." : "确认调整"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={cancelBalanceAdjust}
+                        className="text-slate-200 hover:bg-white/10 hover:text-white"
+                      >
+                        取消
+                      </Button>
+                    </form>
+                  ) : null}
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[1380px] text-left text-sm">
+                      <thead className="text-slate-400">
+                        <tr className="border-b border-white/10">
+                          <th className="py-3">邮箱</th>
+                          <th className="py-3">角色</th>
+                          <th className="py-3">余额</th>
+                          <th className="py-3">API Key</th>
+                          <th className="py-3">累计充值</th>
+                          <th className="py-3">累计消费</th>
+                          <th className="py-3">最近调用</th>
+                          <th className="py-3">创建时间</th>
+                          <th className="py-3">状态</th>
+                          <th className="py-3">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminUsers.map((user) => (
+                          <tr key={user.id} className="border-b border-white/5 align-top">
+                            <td className="py-3 pr-3 font-mono text-cyan-300">{user.email}</td>
+                            <td className="py-3 pr-3 text-slate-300">{user.role}</td>
+                            <td className="py-3 pr-3 text-slate-300">¥{user.balance.toFixed(4)}</td>
+                            <td className="py-3 pr-3 text-slate-300">{user.apiKeyCount}</td>
+                            <td className="py-3 pr-3 text-emerald-300">¥{user.totalRecharge.toFixed(2)}</td>
+                            <td className="py-3 pr-3 text-amber-200">¥{user.totalSpend.toFixed(4)}</td>
+                            <td className="py-3 pr-3 text-slate-300">{formatNullableDateTime(user.lastUsageAt)}</td>
+                            <td className="py-3 pr-3 text-slate-300">{formatDateTime(user.createdAt)}</td>
+                            <td className={user.role === "admin" ? "py-3 pr-3 text-cyan-200" : "py-3 pr-3 text-emerald-300"}>
+                              {user.role === "admin" ? "管理员" : "正常"}
+                            </td>
+                            <td className="py-3">
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={userRoleSubmittingId === user.id}
+                                  onClick={() => void updateAdminUserRole(user, user.role === "admin" ? "user" : "admin")}
+                                  className="hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {user.role === "admin" ? "取消 admin" : "设为 admin"}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => startBalanceAdjust(user, "increase")}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  增加余额
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => startBalanceAdjust(user, "decrease")}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  减少余额
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => void openAdminUserDetail(user, "apiKeys")}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  API Key
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => void openAdminUserDetail(user, "usage")}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  用量
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => void openAdminUserDetail(user, "orders")}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  订单
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {adminUsers.length === 0 ? (
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
+                        {adminUsersLoading ? "正在读取用户数据..." : "暂无匹配用户。"}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {selectedAdminUser && adminUserDetailView ? (
+                    <div className="mt-6 rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm text-slate-400">用户详情</p>
+                          <h4 className="mt-1 break-all font-mono text-cyan-200">{selectedAdminUser.email}</h4>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setSelectedAdminUser(null);
+                            setAdminUserDetailView(null);
+                          }}
+                          className="hover:bg-white/10 hover:text-white"
+                        >
+                          关闭
+                        </Button>
+                      </div>
+
+                      {adminUserDetailLoading ? (
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-slate-400">
+                          正在读取详情...
+                        </div>
+                      ) : null}
+
+                      {!adminUserDetailLoading && adminUserDetailView === "apiKeys" ? (
+                        <div className="overflow-x-auto">
+                          <table className="w-full min-w-[620px] text-left text-sm">
+                            <thead className="text-slate-400">
+                              <tr className="border-b border-white/10">
+                                <th className="py-3">名称</th>
+                                <th className="py-3">前缀</th>
+                                <th className="py-3">状态</th>
+                                <th className="py-3">创建时间</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {adminUserApiKeys.map((key) => (
+                                <tr key={key.id} className="border-b border-white/5">
+                                  <td className="py-3 text-slate-300">{key.name}</td>
+                                  <td className="py-3 font-mono text-cyan-300">{key.key_prefix}********</td>
+                                  <td className={key.revoked ? "py-3 text-amber-300" : "py-3 text-emerald-300"}>
+                                    {key.revoked ? "已撤销" : "可用"}
+                                  </td>
+                                  <td className="py-3 text-slate-300">{formatDateTime(key.created_at)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {adminUserApiKeys.length === 0 ? (
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-slate-400">
+                              该用户暂无 API Key。
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {!adminUserDetailLoading && adminUserDetailView === "usage" ? (
+                        <div className="overflow-x-auto">
+                          <table className="w-full min-w-[760px] text-left text-sm">
+                            <thead className="text-slate-400">
+                              <tr className="border-b border-white/10">
+                                <th className="py-3">时间</th>
+                                <th className="py-3">模型</th>
+                                <th className="py-3">供应商</th>
+                                <th className="py-3">输入</th>
+                                <th className="py-3">输出</th>
+                                <th className="py-3">费用</th>
+                                <th className="py-3">状态</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {adminUserUsageLogs.map((log) => (
+                                <tr key={log.id} className="border-b border-white/5">
+                                  <td className="py-3 text-slate-300">{formatDateTime(log.created_at)}</td>
+                                  <td className="py-3 font-mono text-cyan-300">{log.model ?? "unknown"}</td>
+                                  <td className="py-3 font-mono text-xs text-slate-300">{log.supplier_name ?? "unknown"}</td>
+                                  <td className="py-3 text-slate-300">{log.prompt_tokens ?? 0}</td>
+                                  <td className="py-3 text-slate-300">{log.completion_tokens ?? 0}</td>
+                                  <td className="py-3 text-slate-300">¥{Number(log.cost ?? 0).toFixed(4)}</td>
+                                  <td className="py-3 text-emerald-300">{log.status ?? "success"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {adminUserUsageLogs.length === 0 ? (
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-slate-400">
+                              该用户暂无用量记录。
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {!adminUserDetailLoading && adminUserDetailView === "orders" ? (
+                        <div className="overflow-x-auto">
+                          <table className="w-full min-w-[760px] text-left text-sm">
+                            <thead className="text-slate-400">
+                              <tr className="border-b border-white/10">
+                                <th className="py-3">时间</th>
+                                <th className="py-3">订单号</th>
+                                <th className="py-3">金额</th>
+                                <th className="py-3">方式</th>
+                                <th className="py-3">状态</th>
+                                <th className="py-3">备注</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {adminUserOrders.map((order) => (
+                                <tr key={order.id} className="border-b border-white/5">
+                                  <td className="py-3 text-slate-300">{formatDateTime(order.created_at)}</td>
+                                  <td className="py-3 font-mono text-xs text-cyan-300">{order.id}</td>
+                                  <td className="py-3 text-slate-300">¥{Number(order.amount ?? 0).toFixed(2)}</td>
+                                  <td className="py-3 text-slate-300">{order.method ?? "unknown"}</td>
+                                  <td className="py-3 text-emerald-300">{order.status ?? "pending"}</td>
+                                  <td className="py-3 text-slate-300">{order.note ?? "无"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {adminUserOrders.length === 0 ? (
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-slate-400">
+                              该用户暂无订单记录。
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
               <Card id="suppliers" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
@@ -2770,7 +3447,6 @@ print(completion.choices[0].message.content)`;
               </Card>
               <div className="grid gap-3 md:grid-cols-2">
                 {[
-                  ["users", "用户管理", "后续接入用户查询、封禁、额度调整和角色管理。"],
                   ["finance", "财务统计", "后续展示充值、扣费、收入和余额异常汇总。"],
                   ["errors", "异常请求", "后续聚合上游错误、限流、余额不足和失败请求。"],
                   ["monitoring", "系统监控", "后续展示 QPS、延迟、可用率和供应商健康状态。"],

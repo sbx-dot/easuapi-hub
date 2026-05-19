@@ -391,6 +391,355 @@ $$;
 revoke all on function public.list_suppliers_admin() from public;
 grant execute on function public.list_suppliers_admin() to authenticated;
 
+drop function if exists public.list_users_admin(text, text, text, text);
+create or replace function public.list_users_admin(
+  search_email text default null,
+  role_filter text default 'all',
+  sort_key text default 'created_at',
+  sort_direction text default 'desc'
+)
+returns table (
+  user_id uuid,
+  email text,
+  role text,
+  balance numeric,
+  api_key_count bigint,
+  total_recharge_amount numeric,
+  total_spend_amount numeric,
+  last_usage_at timestamptz,
+  created_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read users';
+  end if;
+
+  return query
+  with key_summary as (
+    select
+      api_keys.user_id,
+      count(*) filter (where api_keys.revoked = false) as api_key_count
+    from public.api_keys
+    group by api_keys.user_id
+  ),
+  order_summary as (
+    select
+      orders.user_id,
+      coalesce(sum(orders.amount) filter (where orders.status = 'paid' and orders.amount > 0), 0) as total_recharge_amount
+    from public.orders
+    group by orders.user_id
+  ),
+  usage_summary as (
+    select
+      usage_logs.user_id,
+      coalesce(sum(usage_logs.cost), 0) as total_spend_amount,
+      max(usage_logs.created_at) as last_usage_at
+    from public.usage_logs
+    group by usage_logs.user_id
+  )
+  select
+    profiles.id,
+    profiles.email,
+    profiles.role,
+    profiles.balance,
+    coalesce(key_summary.api_key_count, 0),
+    coalesce(order_summary.total_recharge_amount, 0),
+    coalesce(usage_summary.total_spend_amount, 0),
+    usage_summary.last_usage_at,
+    profiles.created_at
+  from public.profiles
+  left join key_summary on key_summary.user_id = profiles.id
+  left join order_summary on order_summary.user_id = profiles.id
+  left join usage_summary on usage_summary.user_id = profiles.id
+  where
+    (nullif(btrim(search_email), '') is null or profiles.email ilike '%' || btrim(search_email) || '%')
+    and (
+      coalesce(nullif(role_filter, ''), 'all') = 'all'
+      or profiles.role = role_filter
+    )
+  order by
+    case when sort_key = 'balance' and sort_direction = 'desc' then profiles.balance end desc nulls last,
+    case when sort_key = 'balance' and sort_direction = 'asc' then profiles.balance end asc nulls last,
+    case when sort_key = 'last_usage_at' and sort_direction = 'desc' then usage_summary.last_usage_at end desc nulls last,
+    case when sort_key = 'last_usage_at' and sort_direction = 'asc' then usage_summary.last_usage_at end asc nulls last,
+    profiles.created_at desc;
+end;
+$$;
+
+revoke all on function public.list_users_admin(text, text, text, text) from public;
+grant execute on function public.list_users_admin(text, text, text, text) to authenticated;
+
+drop function if exists public.set_user_role_admin(uuid, text);
+create or replace function public.set_user_role_admin(
+  target_user_id uuid,
+  target_role text
+)
+returns table (
+  user_id uuid,
+  email text,
+  role text,
+  balance numeric
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  updated_profile public.profiles%rowtype;
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can update user roles';
+  end if;
+
+  if target_role not in ('admin', 'user') then
+    raise exception 'Role must be admin or user';
+  end if;
+
+  update public.profiles
+  set role = target_role
+  where id = target_user_id
+  returning * into updated_profile;
+
+  if updated_profile.id is null then
+    raise exception 'User profile not found';
+  end if;
+
+  return query
+  select
+    updated_profile.id,
+    updated_profile.email,
+    updated_profile.role,
+    updated_profile.balance;
+end;
+$$;
+
+revoke all on function public.set_user_role_admin(uuid, text) from public;
+grant execute on function public.set_user_role_admin(uuid, text) to authenticated;
+
+drop function if exists public.adjust_user_balance_admin(uuid, numeric, text);
+create or replace function public.adjust_user_balance_admin(
+  target_user_id uuid,
+  adjustment_amount numeric,
+  adjustment_note text
+)
+returns table (
+  order_id uuid,
+  user_id uuid,
+  email text,
+  new_balance numeric,
+  amount numeric,
+  note text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_profile public.profiles%rowtype;
+  inserted_order public.orders%rowtype;
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can adjust user balances';
+  end if;
+
+  if adjustment_amount is null or adjustment_amount = 0 then
+    raise exception 'Adjustment amount must not be 0';
+  end if;
+
+  if nullif(btrim(coalesce(adjustment_note, '')), '') is null then
+    raise exception 'Adjustment note is required';
+  end if;
+
+  select *
+  into target_profile
+  from public.profiles
+  where id = target_user_id
+  for update;
+
+  if target_profile.id is null then
+    raise exception 'User profile not found';
+  end if;
+
+  if target_profile.balance + adjustment_amount < 0 then
+    raise exception 'Balance cannot be negative';
+  end if;
+
+  update public.profiles
+  set balance = balance + adjustment_amount
+  where id = target_user_id
+  returning * into target_profile;
+
+  insert into public.orders (user_id, amount, method, status, note)
+  values (target_user_id, adjustment_amount, 'admin_adjust', 'paid', btrim(adjustment_note))
+  returning * into inserted_order;
+
+  return query
+  select
+    inserted_order.id,
+    target_profile.id,
+    target_profile.email,
+    target_profile.balance,
+    inserted_order.amount,
+    inserted_order.note;
+end;
+$$;
+
+revoke all on function public.adjust_user_balance_admin(uuid, numeric, text) from public;
+grant execute on function public.adjust_user_balance_admin(uuid, numeric, text) to authenticated;
+
+drop function if exists public.list_user_api_keys_admin(uuid);
+create or replace function public.list_user_api_keys_admin(target_user_id uuid)
+returns table (
+  id uuid,
+  name text,
+  key_prefix text,
+  revoked boolean,
+  created_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read user api keys';
+  end if;
+
+  return query
+  select
+    api_keys.id,
+    api_keys.name,
+    api_keys.key_prefix,
+    api_keys.revoked,
+    api_keys.created_at
+  from public.api_keys
+  where api_keys.user_id = target_user_id
+  order by api_keys.created_at desc
+  limit 50;
+end;
+$$;
+
+revoke all on function public.list_user_api_keys_admin(uuid) from public;
+grant execute on function public.list_user_api_keys_admin(uuid) to authenticated;
+
+drop function if exists public.list_user_usage_logs_admin(uuid, integer);
+create or replace function public.list_user_usage_logs_admin(
+  target_user_id uuid,
+  limit_count integer default 20
+)
+returns table (
+  id uuid,
+  model text,
+  supplier_name text,
+  prompt_tokens integer,
+  completion_tokens integer,
+  cost numeric,
+  status text,
+  created_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read user usage logs';
+  end if;
+
+  return query
+  select
+    usage_logs.id,
+    usage_logs.model,
+    usage_logs.supplier_name,
+    usage_logs.prompt_tokens,
+    usage_logs.completion_tokens,
+    usage_logs.cost,
+    usage_logs.status,
+    usage_logs.created_at
+  from public.usage_logs
+  where usage_logs.user_id = target_user_id
+  order by usage_logs.created_at desc
+  limit greatest(1, least(coalesce(limit_count, 20), 100));
+end;
+$$;
+
+revoke all on function public.list_user_usage_logs_admin(uuid, integer) from public;
+grant execute on function public.list_user_usage_logs_admin(uuid, integer) to authenticated;
+
+drop function if exists public.list_user_orders_admin(uuid, integer);
+create or replace function public.list_user_orders_admin(
+  target_user_id uuid,
+  limit_count integer default 20
+)
+returns table (
+  id uuid,
+  amount numeric,
+  method text,
+  status text,
+  note text,
+  created_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read user orders';
+  end if;
+
+  return query
+  select
+    orders.id,
+    orders.amount,
+    orders.method,
+    orders.status,
+    orders.note,
+    orders.created_at
+  from public.orders
+  where orders.user_id = target_user_id
+  order by orders.created_at desc
+  limit greatest(1, least(coalesce(limit_count, 20), 100));
+end;
+$$;
+
+revoke all on function public.list_user_orders_admin(uuid, integer) from public;
+grant execute on function public.list_user_orders_admin(uuid, integer) to authenticated;
+
 drop policy if exists "Users can read own profile" on public.profiles;
 create policy "Users can read own profile"
 on public.profiles
