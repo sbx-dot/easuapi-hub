@@ -35,6 +35,7 @@ create table if not exists public.usage_logs (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   model text not null,
+  supplier_name text,
   prompt_tokens integer not null default 0,
   completion_tokens integer not null default 0,
   cost numeric not null default 0,
@@ -42,11 +43,29 @@ create table if not exists public.usage_logs (
   created_at timestamptz not null default now()
 );
 
+alter table public.usage_logs
+add column if not exists supplier_name text;
+
+create table if not exists public.suppliers (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  display_name text not null,
+  base_url text not null,
+  api_key_encrypted text,
+  provider_type text not null default 'openai-compatible',
+  enabled boolean not null default true,
+  priority integer not null default 100,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.models (
   id uuid primary key default gen_random_uuid(),
   name text not null unique,
   upstream_model text not null,
   display_name text not null,
+  supplier_name text not null default 'deepseek',
   provider text not null default 'deepseek',
   input_price_per_1k numeric not null default 0,
   output_price_per_1k numeric not null default 0,
@@ -57,23 +76,31 @@ create table if not exists public.models (
   updated_at timestamptz not null default now()
 );
 
+alter table public.models
+add column if not exists supplier_name text not null default 'deepseek';
+
 create index if not exists api_keys_user_id_idx on public.api_keys(user_id);
 create index if not exists api_keys_user_id_revoked_idx on public.api_keys(user_id, revoked);
 create unique index if not exists api_keys_key_hash_idx on public.api_keys(key_hash);
 create index if not exists orders_user_id_idx on public.orders(user_id);
 create index if not exists usage_logs_user_id_idx on public.usage_logs(user_id);
+create index if not exists usage_logs_supplier_name_idx on public.usage_logs(supplier_name);
+create index if not exists suppliers_enabled_priority_idx on public.suppliers(enabled, priority);
 create index if not exists models_enabled_sort_order_idx on public.models(enabled, sort_order);
+create index if not exists models_supplier_name_idx on public.models(supplier_name);
 
 alter table public.profiles enable row level security;
 alter table public.api_keys enable row level security;
 alter table public.orders enable row level security;
 alter table public.usage_logs enable row level security;
+alter table public.suppliers enable row level security;
 alter table public.models enable row level security;
 
 revoke all on table public.profiles from anon, authenticated;
 revoke all on table public.api_keys from anon, authenticated;
 revoke all on table public.orders from anon, authenticated;
 revoke all on table public.usage_logs from anon, authenticated;
+revoke all on table public.suppliers from anon, authenticated;
 revoke all on table public.models from anon, authenticated;
 
 grant select on table public.profiles to authenticated;
@@ -82,11 +109,43 @@ grant insert (user_id, name, key_prefix, key_hash) on table public.api_keys to a
 grant update (revoked) on table public.api_keys to authenticated;
 grant select on table public.orders to authenticated;
 grant select on table public.usage_logs to authenticated;
+grant select (
+  id,
+  name,
+  display_name,
+  base_url,
+  provider_type,
+  enabled,
+  priority,
+  notes,
+  created_at,
+  updated_at
+) on table public.suppliers to authenticated;
+grant insert (
+  name,
+  display_name,
+  base_url,
+  api_key_encrypted,
+  provider_type,
+  enabled,
+  priority,
+  notes
+) on table public.suppliers to authenticated;
+grant update (
+  display_name,
+  base_url,
+  api_key_encrypted,
+  provider_type,
+  enabled,
+  priority,
+  notes
+) on table public.suppliers to authenticated;
 grant select on table public.models to anon, authenticated;
 grant insert (
   name,
   upstream_model,
   display_name,
+  supplier_name,
   provider,
   input_price_per_1k,
   output_price_per_1k,
@@ -97,6 +156,7 @@ grant insert (
 grant update (
   upstream_model,
   display_name,
+  supplier_name,
   provider,
   input_price_per_1k,
   output_price_per_1k,
@@ -121,10 +181,41 @@ create trigger set_models_updated_at
 before update on public.models
 for each row execute function public.set_updated_at();
 
+drop trigger if exists set_suppliers_updated_at on public.suppliers;
+create trigger set_suppliers_updated_at
+before update on public.suppliers
+for each row execute function public.set_updated_at();
+
+insert into public.suppliers (
+  name,
+  display_name,
+  base_url,
+  provider_type,
+  enabled,
+  priority
+)
+values
+  (
+    'deepseek',
+    'DeepSeek 官方',
+    'https://api.deepseek.com/v1',
+    'openai-compatible',
+    true,
+    10
+  )
+on conflict (name) do update
+set
+  display_name = excluded.display_name,
+  base_url = excluded.base_url,
+  provider_type = excluded.provider_type,
+  enabled = excluded.enabled,
+  priority = excluded.priority;
+
 insert into public.models (
   name,
   upstream_model,
   display_name,
+  supplier_name,
   provider,
   input_price_per_1k,
   output_price_per_1k,
@@ -138,6 +229,7 @@ values
     'deepseek-chat',
     'DeepSeek Chat',
     'deepseek',
+    'deepseek',
     0.01,
     0.01,
     true,
@@ -149,16 +241,30 @@ values
     'deepseek-reasoner',
     'DeepSeek Reasoner',
     'deepseek',
+    'deepseek',
     0.02,
     0.02,
     true,
     '适合复杂推理、规划和多步骤问题。',
     20
+  ),
+  (
+    'deepseek-v4-pro',
+    'deepseek-v4-pro',
+    'DeepSeek V4 Pro',
+    'deepseek',
+    'deepseek',
+    0.02,
+    0.02,
+    true,
+    'DeepSeek V4 Pro 模型。',
+    30
   )
 on conflict (name) do update
 set
   upstream_model = excluded.upstream_model,
   display_name = excluded.display_name,
+  supplier_name = excluded.supplier_name,
   provider = excluded.provider,
   input_price_per_1k = excluded.input_price_per_1k,
   output_price_per_1k = excluded.output_price_per_1k,
@@ -235,6 +341,56 @@ $$;
 revoke all on function public.manual_recharge(text, numeric, text) from public;
 grant execute on function public.manual_recharge(text, numeric, text) to authenticated;
 
+drop function if exists public.list_suppliers_admin();
+create or replace function public.list_suppliers_admin()
+returns table (
+  id uuid,
+  name text,
+  display_name text,
+  base_url text,
+  provider_type text,
+  enabled boolean,
+  priority integer,
+  notes text,
+  api_key_configured boolean,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read suppliers';
+  end if;
+
+  return query
+  select
+    suppliers.id,
+    suppliers.name,
+    suppliers.display_name,
+    suppliers.base_url,
+    suppliers.provider_type,
+    suppliers.enabled,
+    suppliers.priority,
+    suppliers.notes,
+    nullif(btrim(coalesce(suppliers.api_key_encrypted, '')), '') is not null,
+    suppliers.created_at,
+    suppliers.updated_at
+  from public.suppliers
+  order by suppliers.priority asc, suppliers.created_at asc;
+end;
+$$;
+
+revoke all on function public.list_suppliers_admin() from public;
+grant execute on function public.list_suppliers_admin() to authenticated;
+
 drop policy if exists "Users can read own profile" on public.profiles;
 create policy "Users can read own profile"
 on public.profiles
@@ -277,6 +433,56 @@ on public.usage_logs
 for select
 to authenticated
 using ((select auth.uid()) = user_id);
+
+drop policy if exists "Admins can read suppliers" on public.suppliers;
+create policy "Admins can read suppliers"
+on public.suppliers
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+);
+
+drop policy if exists "Admins can insert suppliers" on public.suppliers;
+create policy "Admins can insert suppliers"
+on public.suppliers
+for insert
+to authenticated
+with check (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+);
+
+drop policy if exists "Admins can update suppliers" on public.suppliers;
+create policy "Admins can update suppliers"
+on public.suppliers
+for update
+to authenticated
+using (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+);
 
 drop policy if exists "Enabled models are readable" on public.models;
 create policy "Enabled models are readable"

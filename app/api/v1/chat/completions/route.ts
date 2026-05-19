@@ -24,8 +24,17 @@ type ProfileRow = {
 type ModelPricingRow = {
   name: string;
   upstream_model: string;
+  supplier_name: string;
   input_price_per_1k: number | string;
   output_price_per_1k: number | string;
+  enabled: boolean;
+};
+
+type SupplierRow = {
+  name: string;
+  base_url: string;
+  api_key_encrypted: string | null;
+  provider_type: string;
   enabled: boolean;
 };
 
@@ -185,6 +194,7 @@ function validateRequestLimits(body: ChatCompletionRequest) {
 async function recordUsage({
   userId,
   model,
+  supplierName,
   promptTokens,
   completionTokens,
   cost,
@@ -193,6 +203,7 @@ async function recordUsage({
 }: {
   userId: string;
   model: string;
+  supplierName: string;
   promptTokens: number;
   completionTokens: number;
   cost: number;
@@ -215,6 +226,7 @@ async function recordUsage({
   const { error: usageError } = await supabase.from("usage_logs").insert({
     user_id: userId,
     model,
+    supplier_name: supplierName,
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
     cost,
@@ -226,11 +238,12 @@ async function recordUsage({
   }
 }
 
-async function safeRecordFailedUsage(userId: string, model: string, balance: number) {
+async function safeRecordFailedUsage(userId: string, model: string, supplierName: string, balance: number) {
   try {
     await recordUsage({
       userId,
       model,
+      supplierName,
       promptTokens: 0,
       completionTokens: 0,
       cost: 0,
@@ -270,18 +283,14 @@ export async function POST(request: Request) {
     return errorResponse(requestLimitError, 400);
   }
 
-  const upstreamBaseUrl = process.env.UPSTREAM_BASE_URL?.trim();
-  const upstreamApiKey = process.env.UPSTREAM_API_KEY?.trim();
+  const fallbackUpstreamApiKey = process.env.UPSTREAM_API_KEY?.trim();
   const defaultModel = process.env.UPSTREAM_DEFAULT_MODEL?.trim() || "deepseek-chat";
   const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : defaultModel;
-
-  if (!upstreamBaseUrl || !upstreamApiKey) {
-    return errorResponse("Server is missing UPSTREAM_BASE_URL or UPSTREAM_API_KEY", 500);
-  }
 
   let apiKeyRow: ApiKeyRow;
   let balance: number;
   let modelPricing: ModelPricingRow | null = null;
+  let supplier: SupplierRow | null = null;
 
   try {
     const supabase = getSupabaseAdmin();
@@ -343,7 +352,7 @@ export async function POST(request: Request) {
 
     const { data: modelData, error: modelError } = await supabase
       .from("models")
-      .select("name,upstream_model,input_price_per_1k,output_price_per_1k,enabled")
+      .select("name,upstream_model,supplier_name,input_price_per_1k,output_price_per_1k,enabled")
       .eq("name", model)
       .eq("enabled", true)
       .maybeSingle();
@@ -357,6 +366,30 @@ export async function POST(request: Request) {
     }
 
     modelPricing = modelData as ModelPricingRow;
+
+    const { data: supplierData, error: supplierError } = await supabase
+      .from("suppliers")
+      .select("name,base_url,api_key_encrypted,provider_type,enabled")
+      .eq("name", modelPricing.supplier_name)
+      .maybeSingle();
+
+    if (supplierError) {
+      throw new Error(`Supplier lookup failed: ${supplierError.message}`);
+    }
+
+    if (!supplierData) {
+      return errorResponse(`Supplier ${modelPricing.supplier_name} is not configured`, 400);
+    }
+
+    supplier = supplierData as SupplierRow;
+
+    if (!supplier.enabled) {
+      return errorResponse(`Supplier ${supplier.name} is disabled. Please contact the administrator.`, 400);
+    }
+
+    if (supplier.provider_type.trim().toLowerCase() !== "openai-compatible") {
+      return errorResponse(`Supplier ${supplier.name} provider_type is not supported`, 400);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Authentication failed";
     return errorResponse(message, 500);
@@ -364,6 +397,16 @@ export async function POST(request: Request) {
 
   if (!modelPricing) {
     return errorResponse("model not supported or disabled", 400);
+  }
+
+  if (!supplier) {
+    return errorResponse(`Supplier ${modelPricing.supplier_name} is not configured`, 400);
+  }
+
+  const upstreamApiKey = supplier.api_key_encrypted?.trim() || fallbackUpstreamApiKey;
+
+  if (!upstreamApiKey) {
+    return errorResponse(`Supplier ${supplier.name} API key is not configured`, 500);
   }
 
   const upstreamPayload = {
@@ -376,7 +419,7 @@ export async function POST(request: Request) {
   let upstreamStatus: number;
 
   try {
-    const upstreamResponse = await fetch(`${normalizeBaseUrl(upstreamBaseUrl)}/chat/completions`, {
+    const upstreamResponse = await fetch(`${normalizeBaseUrl(supplier.base_url)}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -399,7 +442,7 @@ export async function POST(request: Request) {
     }
 
     if (!upstreamResponse.ok) {
-      await safeRecordFailedUsage(apiKeyRow.user_id, modelPricing.name, balance);
+      await safeRecordFailedUsage(apiKeyRow.user_id, modelPricing.name, supplier.name, balance);
 
       return errorResponse(
         "Upstream request failed",
@@ -408,7 +451,7 @@ export async function POST(request: Request) {
       );
     }
   } catch (error) {
-    await safeRecordFailedUsage(apiKeyRow.user_id, modelPricing.name, balance);
+    await safeRecordFailedUsage(apiKeyRow.user_id, modelPricing.name, supplier.name, balance);
 
     const message = error instanceof Error ? error.message : "Upstream request failed";
     return errorResponse("Upstream request failed", 502, message);
@@ -435,6 +478,7 @@ export async function POST(request: Request) {
     await recordUsage({
       userId: apiKeyRow.user_id,
       model: modelPricing.name,
+      supplierName: supplier.name,
       promptTokens: safePromptTokens,
       completionTokens: safeCompletionTokens,
       cost,

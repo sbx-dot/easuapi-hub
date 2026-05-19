@@ -58,6 +58,7 @@ type UsageItem = {
   id: string;
   time: string;
   model: string;
+  supplierName: string;
   promptTokens: number;
   completionTokens: number;
   cost: number;
@@ -100,6 +101,7 @@ type OrderRow = {
 type UsageLogRow = {
   id: string;
   model: string | null;
+  supplier_name: string | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   cost: number | string | null;
@@ -121,6 +123,7 @@ type ModelRow = {
   name: string;
   upstream_model: string;
   display_name: string;
+  supplier_name: string | null;
   provider: string;
   input_price_per_1k: number | string;
   output_price_per_1k: number | string;
@@ -136,6 +139,7 @@ type ModelItem = {
   name: string;
   upstreamModel: string;
   label: string;
+  supplierName: string;
   provider: string;
   inputPrice: string;
   outputPrice: string;
@@ -151,11 +155,49 @@ type ModelFormState = {
   displayName: string;
   provider: string;
   upstreamModel: string;
+  supplierName: string;
   inputPrice: string;
   outputPrice: string;
   enabled: boolean;
   description: string;
   sortOrder: string;
+};
+
+type SupplierRow = {
+  id: string;
+  name: string;
+  display_name: string;
+  base_url: string;
+  provider_type: string;
+  enabled: boolean;
+  priority: number | null;
+  notes: string | null;
+  api_key_configured: boolean | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type SupplierItem = {
+  id?: string;
+  name: string;
+  displayName: string;
+  baseUrl: string;
+  providerType: string;
+  enabled: boolean;
+  priority: number;
+  notes: string;
+  apiKeyConfigured: boolean;
+};
+
+type SupplierFormState = {
+  name: string;
+  displayName: string;
+  baseUrl: string;
+  providerType: string;
+  apiKey: string;
+  enabled: boolean;
+  priority: string;
+  notes: string;
 };
 
 const API_KEY_PREFIX_LENGTH = 16;
@@ -165,6 +207,7 @@ const emptyModelForm: ModelFormState = {
   displayName: "",
   provider: "deepseek",
   upstreamModel: "",
+  supplierName: "deepseek",
   inputPrice: "0.01",
   outputPrice: "0.01",
   enabled: true,
@@ -172,11 +215,23 @@ const emptyModelForm: ModelFormState = {
   sortOrder: "100",
 };
 
+const emptySupplierForm: SupplierFormState = {
+  name: "",
+  displayName: "",
+  baseUrl: "https://api.deepseek.com/v1",
+  providerType: "openai-compatible",
+  apiKey: "",
+  enabled: true,
+  priority: "100",
+  notes: "",
+};
+
 const fallbackModelList: ModelItem[] = [
   {
     name: "deepseek-chat",
     upstreamModel: "deepseek-chat",
     label: "DeepSeek Chat",
+    supplierName: "deepseek",
     provider: "deepseek",
     inputPrice: "¥0.01 / 1K tokens",
     outputPrice: "¥0.01 / 1K tokens",
@@ -190,6 +245,7 @@ const fallbackModelList: ModelItem[] = [
     name: "deepseek-reasoner",
     upstreamModel: "deepseek-reasoner",
     label: "DeepSeek Reasoner",
+    supplierName: "deepseek",
     provider: "deepseek",
     inputPrice: "¥0.02 / 1K tokens",
     outputPrice: "¥0.02 / 1K tokens",
@@ -263,6 +319,7 @@ function mapUsageLog(row: UsageLogRow): UsageItem {
     id: row.id,
     time: formatDateTime(row.created_at),
     model: row.model ?? "unknown",
+    supplierName: row.supplier_name ?? "unknown",
     promptTokens: row.prompt_tokens ?? 0,
     completionTokens: row.completion_tokens ?? 0,
     cost: Number(row.cost ?? 0),
@@ -286,6 +343,7 @@ function mapModel(row: ModelRow): ModelItem {
     name: row.name,
     upstreamModel: row.upstream_model,
     label: row.display_name,
+    supplierName: row.supplier_name ?? "deepseek",
     provider: row.provider,
     inputPrice: formatModelPrice(inputPricePer1K),
     outputPrice: formatModelPrice(outputPricePer1K),
@@ -303,11 +361,39 @@ function modelToForm(model: ModelItem): ModelFormState {
     displayName: model.label,
     provider: model.provider,
     upstreamModel: model.upstreamModel,
+    supplierName: model.supplierName,
     inputPrice: String(model.inputPricePer1K),
     outputPrice: String(model.outputPricePer1K),
     enabled: model.enabled,
     description: model.desc === "暂无说明。" ? "" : model.desc,
     sortOrder: String(model.sortOrder),
+  };
+}
+
+function mapSupplier(row: SupplierRow): SupplierItem {
+  return {
+    id: row.id,
+    name: row.name,
+    displayName: row.display_name,
+    baseUrl: row.base_url,
+    providerType: row.provider_type,
+    enabled: row.enabled,
+    priority: row.priority ?? 100,
+    notes: row.notes ?? "",
+    apiKeyConfigured: Boolean(row.api_key_configured),
+  };
+}
+
+function supplierToForm(supplier: SupplierItem): SupplierFormState {
+  return {
+    name: supplier.name,
+    displayName: supplier.displayName,
+    baseUrl: supplier.baseUrl,
+    providerType: supplier.providerType,
+    apiKey: "",
+    enabled: supplier.enabled,
+    priority: String(supplier.priority),
+    notes: supplier.notes,
   };
 }
 
@@ -376,12 +462,18 @@ export default function EasyApiHubPage() {
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [modelList, setModelList] = useState<ModelItem[]>(fallbackModelList);
   const [adminModels, setAdminModels] = useState<ModelItem[]>([]);
+  const [adminSuppliers, setAdminSuppliers] = useState<SupplierItem[]>([]);
   const [modelsMessage, setModelsMessage] = useState("");
   const [modelForm, setModelForm] = useState<ModelFormState>(emptyModelForm);
   const [editModelForm, setEditModelForm] = useState<ModelFormState>(emptyModelForm);
   const [editingModelId, setEditingModelId] = useState("");
   const [modelSubmitting, setModelSubmitting] = useState(false);
   const [adminModelMessage, setAdminModelMessage] = useState("");
+  const [supplierForm, setSupplierForm] = useState<SupplierFormState>(emptySupplierForm);
+  const [editSupplierForm, setEditSupplierForm] = useState<SupplierFormState>(emptySupplierForm);
+  const [editingSupplierId, setEditingSupplierId] = useState("");
+  const [supplierSubmitting, setSupplierSubmitting] = useState(false);
+  const [adminSupplierMessage, setAdminSupplierMessage] = useState("");
 
   const activeKey = apiKeys[0]?.oneTimeKey ?? (apiKeys[0] ? `${apiKeys[0].keyPrefix}...` : "你的_API_Key");
   const userEmail = session?.user.email ?? email;
@@ -393,6 +485,15 @@ export default function EasyApiHubPage() {
   const selectedModelName = selectedModelInfo.name;
   const apiBaseUrl = "https://eelapi.com/api/v1";
   const exampleModel = "deepseek-chat";
+  const supplierOptions =
+    adminSuppliers.length > 0
+      ? adminSuppliers
+      : [
+          {
+            name: "deepseek",
+            displayName: "DeepSeek 官方",
+          },
+        ];
 
   const pythonCode = useMemo(() => {
     return `from openai import OpenAI
@@ -441,10 +542,15 @@ print(completion.choices[0].message.content)`;
     setManualRechargeNote("");
     setManualRechargeMessage("");
     setAdminModels([]);
+    setAdminSuppliers([]);
     setModelForm(emptyModelForm);
     setEditModelForm(emptyModelForm);
     setEditingModelId("");
     setAdminModelMessage("");
+    setSupplierForm(emptySupplierForm);
+    setEditSupplierForm(emptySupplierForm);
+    setEditingSupplierId("");
+    setAdminSupplierMessage("");
   }, []);
 
   const loadEnabledModels = useCallback(async () => {
@@ -458,7 +564,7 @@ print(completion.choices[0].message.content)`;
       const { data, error } = await supabase
         .from("models")
         .select(
-          "id,name,upstream_model,display_name,provider,input_price_per_1k,output_price_per_1k,enabled,description,sort_order,created_at,updated_at"
+          "id,name,upstream_model,display_name,supplier_name,provider,input_price_per_1k,output_price_per_1k,enabled,description,sort_order,created_at,updated_at"
         )
         .eq("enabled", true)
         .order("sort_order", { ascending: true })
@@ -488,7 +594,7 @@ print(completion.choices[0].message.content)`;
       const { data, error } = await supabase
         .from("models")
         .select(
-          "id,name,upstream_model,display_name,provider,input_price_per_1k,output_price_per_1k,enabled,description,sort_order,created_at,updated_at"
+          "id,name,upstream_model,display_name,supplier_name,provider,input_price_per_1k,output_price_per_1k,enabled,description,sort_order,created_at,updated_at"
         )
         .order("sort_order", { ascending: true })
         .order("created_at", { ascending: true });
@@ -501,6 +607,26 @@ print(completion.choices[0].message.content)`;
     } catch (error) {
       console.error(error);
       setAdminModelMessage("模型管理数据读取失败，请确认 models 表和 RLS policy 已执行。");
+    }
+  }, []);
+
+  const loadAdminSuppliers = useCallback(async () => {
+    if (!supabase) {
+      setAdminSuppliers([]);
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase.rpc("list_suppliers_admin");
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminSuppliers(((data ?? []) as SupplierRow[]).map((row) => mapSupplier(row)));
+    } catch (error) {
+      console.error(error);
+      setAdminSupplierMessage("供应商线路读取失败，请确认 suppliers 表、RLS policy 和 list_suppliers_admin RPC 已执行。");
     }
   }, []);
 
@@ -536,7 +662,7 @@ print(completion.choices[0].message.content)`;
             .order("created_at", { ascending: false }),
           supabase
             .from("usage_logs")
-            .select("id,model,prompt_tokens,completion_tokens,cost,status,created_at")
+            .select("id,model,supplier_name,prompt_tokens,completion_tokens,cost,status,created_at")
             .eq("user_id", userId)
             .order("created_at", { ascending: false }),
         ]);
@@ -578,14 +704,15 @@ print(completion.choices[0].message.content)`;
   useEffect(() => {
     const timer = window.setTimeout(() => {
       if (isAdmin) {
-        void loadAdminModels();
+        void Promise.all([loadAdminModels(), loadAdminSuppliers()]);
       } else {
         setAdminModels([]);
+        setAdminSuppliers([]);
       }
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, [isAdmin, loadAdminModels]);
+  }, [isAdmin, loadAdminModels, loadAdminSuppliers]);
 
   useEffect(() => {
     if (!supabase) {
@@ -903,15 +1030,16 @@ print(completion.choices[0].message.content)`;
     const name = form.name.trim();
     const displayName = form.displayName.trim();
     const upstreamModel = form.upstreamModel.trim();
+    const supplierName = form.supplierName.trim() || "deepseek";
     const provider = form.provider.trim() || "deepseek";
     const inputPrice = Number(form.inputPrice);
     const outputPrice = Number(form.outputPrice);
     const sortOrder = Number(form.sortOrder || 100);
     const description = form.description.trim() || null;
 
-    if (!name || !displayName || !upstreamModel) {
+    if (!name || !displayName || !upstreamModel || !supplierName) {
       return {
-        error: "请填写 model name、展示名称和上游模型名。",
+        error: "请填写 model name、展示名称、上游模型名和供应商线路。",
         payload: null,
       };
     }
@@ -934,6 +1062,7 @@ print(completion.choices[0].message.content)`;
         name,
         upstream_model: upstreamModel,
         display_name: displayName,
+        supplier_name: supplierName,
         provider,
         input_price_per_1k: inputPrice,
         output_price_per_1k: outputPrice,
@@ -1047,6 +1176,170 @@ print(completion.choices[0].message.content)`;
       setAdminModelMessage(`状态更新失败：${getErrorMessage(error)}`);
     } finally {
       setModelSubmitting(false);
+    }
+  };
+
+  const resetSupplierForm = () => {
+    setSupplierForm(emptySupplierForm);
+    setEditSupplierForm(emptySupplierForm);
+    setEditingSupplierId("");
+  };
+
+  const startEditSupplier = (supplier: SupplierItem) => {
+    if (!supplier.id) {
+      return;
+    }
+
+    setEditingSupplierId(supplier.id);
+    setEditSupplierForm(supplierToForm(supplier));
+    setAdminSupplierMessage(`正在编辑供应商线路：${supplier.name}`);
+  };
+
+  const parseSupplierForm = (form: SupplierFormState, includeName: boolean) => {
+    const name = form.name.trim();
+    const displayName = form.displayName.trim();
+    const baseUrl = form.baseUrl.trim().replace(/\/+$/u, "");
+    const providerType = form.providerType.trim() || "openai-compatible";
+    const priority = Number(form.priority || 100);
+    const notes = form.notes.trim() || null;
+    const apiKey = form.apiKey.trim();
+
+    if ((includeName && !name) || !displayName || !baseUrl || !providerType) {
+      return {
+        error: "请填写供应商 name、展示名称、Base URL 和 provider_type。",
+        payload: null,
+      };
+    }
+
+    try {
+      new URL(baseUrl);
+    } catch {
+      return {
+        error: "Base URL 必须是有效 URL，例如 https://api.deepseek.com/v1。",
+        payload: null,
+      };
+    }
+
+    if (!Number.isFinite(priority)) {
+      return {
+        error: "priority 必须是数字。",
+        payload: null,
+      };
+    }
+
+    return {
+      error: "",
+      payload: {
+        ...(includeName ? { name } : {}),
+        display_name: displayName,
+        base_url: baseUrl,
+        ...(apiKey ? { api_key_encrypted: apiKey } : {}),
+        provider_type: providerType,
+        enabled: form.enabled,
+        priority,
+        notes,
+      },
+    };
+  };
+
+  const handleSupplierSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAdminSupplierMessage("");
+
+    if (!supabase || !session || !isAdmin) {
+      setAdminSupplierMessage("只有管理员可以管理供应商线路。");
+      return;
+    }
+
+    const { error: formError, payload } = parseSupplierForm(supplierForm, true);
+
+    if (formError || !payload) {
+      setAdminSupplierMessage(formError);
+      return;
+    }
+
+    setSupplierSubmitting(true);
+
+    try {
+      const { error } = await supabase.from("suppliers").insert(payload);
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminSupplierMessage(`供应商线路已新增：${supplierForm.name.trim()}`);
+      setSupplierForm(emptySupplierForm);
+      await loadAdminSuppliers();
+    } catch (error) {
+      console.error(error);
+      setAdminSupplierMessage(`供应商保存失败：${getErrorMessage(error)}`);
+    } finally {
+      setSupplierSubmitting(false);
+    }
+  };
+
+  const saveEditedSupplier = async (supplier: SupplierItem) => {
+    setAdminSupplierMessage("");
+
+    if (!supabase || !session || !isAdmin || !supplier.id) {
+      setAdminSupplierMessage("只有管理员可以编辑供应商线路。");
+      return;
+    }
+
+    const { error: formError, payload } = parseSupplierForm(editSupplierForm, false);
+
+    if (formError || !payload) {
+      setAdminSupplierMessage(formError);
+      return;
+    }
+
+    setSupplierSubmitting(true);
+
+    try {
+      const { error } = await supabase.from("suppliers").update(payload).eq("id", supplier.id);
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminSupplierMessage(`供应商线路已更新：${supplier.name}`);
+      setEditingSupplierId("");
+      setEditSupplierForm(emptySupplierForm);
+      await loadAdminSuppliers();
+    } catch (error) {
+      console.error(error);
+      setAdminSupplierMessage(`供应商保存失败：${getErrorMessage(error)}`);
+    } finally {
+      setSupplierSubmitting(false);
+    }
+  };
+
+  const toggleSupplierEnabled = async (supplier: SupplierItem) => {
+    if (!supabase || !session || !isAdmin || !supplier.id) {
+      setAdminSupplierMessage("只有管理员可以启用或禁用供应商线路。");
+      return;
+    }
+
+    setSupplierSubmitting(true);
+    setAdminSupplierMessage("");
+
+    try {
+      const { error } = await supabase
+        .from("suppliers")
+        .update({ enabled: !supplier.enabled })
+        .eq("id", supplier.id);
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminSupplierMessage(`${supplier.name} 已${supplier.enabled ? "禁用" : "启用"}。`);
+      await loadAdminSuppliers();
+    } catch (error) {
+      console.error(error);
+      setAdminSupplierMessage(`供应商状态更新失败：${getErrorMessage(error)}`);
+    } finally {
+      setSupplierSubmitting(false);
     }
   };
 
@@ -1401,11 +1694,12 @@ print(completion.choices[0].message.content)`;
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[580px] text-left text-sm">
+                    <table className="w-full min-w-[680px] text-left text-sm">
                       <thead className="text-slate-400">
                         <tr className="border-b border-white/10">
                           <th className="py-3">时间</th>
                           <th className="py-3">模型</th>
+                          <th className="py-3">供应商</th>
                           <th className="py-3">输入</th>
                           <th className="py-3">输出</th>
                           <th className="py-3">费用</th>
@@ -1417,6 +1711,7 @@ print(completion.choices[0].message.content)`;
                           <tr key={log.id} className="border-b border-white/5">
                             <td className="py-3 text-slate-300">{log.time}</td>
                             <td className="py-3 font-mono text-cyan-300">{log.model}</td>
+                            <td className="py-3 font-mono text-xs text-slate-300">{log.supplierName}</td>
                             <td className="py-3 text-slate-300">{log.promptTokens}</td>
                             <td className="py-3 text-slate-300">{log.completionTokens}</td>
                             <td className="py-3 text-slate-300">¥{log.cost.toFixed(4)}</td>
@@ -1619,6 +1914,329 @@ print(completion.choices[0].message.content)`;
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                     <div>
+                      <h3 className="text-xl font-bold">供应商线路</h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-400">
+                        第一版支持 OpenAI-compatible 的 /v1/chat/completions。API Key 列表只显示配置状态，编辑时填写新 Key 会覆盖旧值。
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={resetSupplierForm}
+                      variant="outline"
+                      className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10"
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      新增供应商
+                    </Button>
+                  </div>
+
+                  <form onSubmit={handleSupplierSubmit} className="grid gap-4 lg:grid-cols-4">
+                    <div>
+                      <label className="text-sm text-slate-300">name</label>
+                      <input
+                        value={supplierForm.name}
+                        onChange={(event) => setSupplierForm((form) => ({ ...form, name: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-sm text-white outline-none focus:border-cyan-300"
+                        placeholder="deepseek"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">展示名称</label>
+                      <input
+                        value={supplierForm.displayName}
+                        onChange={(event) =>
+                          setSupplierForm((form) => ({ ...form, displayName: event.target.value }))
+                        }
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="DeepSeek 官方"
+                      />
+                    </div>
+                    <div className="lg:col-span-2">
+                      <label className="text-sm text-slate-300">Base URL</label>
+                      <input
+                        value={supplierForm.baseUrl}
+                        onChange={(event) => setSupplierForm((form) => ({ ...form, baseUrl: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-sm text-white outline-none focus:border-cyan-300"
+                        placeholder="https://api.deepseek.com/v1"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">provider_type</label>
+                      <input
+                        value={supplierForm.providerType}
+                        onChange={(event) =>
+                          setSupplierForm((form) => ({ ...form, providerType: event.target.value }))
+                        }
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="openai-compatible"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">API Key</label>
+                      <input
+                        type="password"
+                        value={supplierForm.apiKey}
+                        onChange={(event) => setSupplierForm((form) => ({ ...form, apiKey: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="可留空，继续使用环境变量兜底"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">priority</label>
+                      <input
+                        type="number"
+                        step="1"
+                        value={supplierForm.priority}
+                        onChange={(event) => setSupplierForm((form) => ({ ...form, priority: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      />
+                    </div>
+                    <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-200 lg:mt-7">
+                      <input
+                        type="checkbox"
+                        checked={supplierForm.enabled}
+                        onChange={(event) => setSupplierForm((form) => ({ ...form, enabled: event.target.checked }))}
+                        className="h-4 w-4"
+                      />
+                      启用线路
+                    </label>
+                    <div className="lg:col-span-4">
+                      <label className="text-sm text-slate-300">备注</label>
+                      <textarea
+                        value={supplierForm.notes}
+                        onChange={(event) => setSupplierForm((form) => ({ ...form, notes: event.target.value }))}
+                        className="mt-2 min-h-20 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="线路用途、额度、风控说明等"
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-3 lg:col-span-4">
+                      <Button
+                        type="submit"
+                        disabled={supplierSubmitting}
+                        className="rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {supplierSubmitting ? "保存中..." : "新增供应商"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={() =>
+                          setSupplierForm({
+                            name: "deepseek",
+                            displayName: "DeepSeek 官方",
+                            baseUrl: "https://api.deepseek.com/v1",
+                            providerType: "openai-compatible",
+                            apiKey: "",
+                            enabled: true,
+                            priority: "10",
+                            notes: "",
+                          })
+                        }
+                        className="text-slate-200 hover:bg-white/10 hover:text-white"
+                      >
+                        填入 DeepSeek 示例
+                      </Button>
+                    </div>
+                  </form>
+
+                  {adminSupplierMessage ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                      {adminSupplierMessage}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-6 overflow-x-auto">
+                    <table className="w-full min-w-[1260px] text-left text-sm">
+                      <thead className="text-slate-400">
+                        <tr className="border-b border-white/10">
+                          <th className="py-3">展示名称</th>
+                          <th className="py-3">name</th>
+                          <th className="py-3">Base URL</th>
+                          <th className="py-3">provider_type</th>
+                          <th className="py-3">API Key</th>
+                          <th className="py-3">priority</th>
+                          <th className="py-3">状态</th>
+                          <th className="py-3">备注</th>
+                          <th className="py-3">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminSuppliers.map((supplier) => {
+                          const isEditing = editingSupplierId === supplier.id;
+                          const inputClass =
+                            "w-full rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-white outline-none focus:border-cyan-300";
+
+                          return (
+                            <tr key={supplier.id ?? supplier.name} className="border-b border-white/5 align-top">
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    value={editSupplierForm.displayName}
+                                    onChange={(event) =>
+                                      setEditSupplierForm((form) => ({ ...form, displayName: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  />
+                                ) : (
+                                  supplier.displayName
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 font-mono text-cyan-300">{supplier.name}</td>
+                              <td className="py-3 pr-3 font-mono text-xs text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    value={editSupplierForm.baseUrl}
+                                    onChange={(event) =>
+                                      setEditSupplierForm((form) => ({ ...form, baseUrl: event.target.value }))
+                                    }
+                                    className={`${inputClass} font-mono text-xs`}
+                                  />
+                                ) : (
+                                  supplier.baseUrl
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    value={editSupplierForm.providerType}
+                                    onChange={(event) =>
+                                      setEditSupplierForm((form) => ({ ...form, providerType: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  />
+                                ) : (
+                                  supplier.providerType
+                                )}
+                              </td>
+                              <td className={supplier.apiKeyConfigured ? "py-3 pr-3 text-emerald-300" : "py-3 pr-3 text-amber-300"}>
+                                {isEditing ? (
+                                  <input
+                                    type="password"
+                                    value={editSupplierForm.apiKey}
+                                    onChange={(event) =>
+                                      setEditSupplierForm((form) => ({ ...form, apiKey: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                    placeholder={supplier.apiKeyConfigured ? "留空保持当前 Key" : "填写 API Key"}
+                                  />
+                                ) : supplier.apiKeyConfigured ? (
+                                  "已配置"
+                                ) : (
+                                  "未配置"
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    value={editSupplierForm.priority}
+                                    onChange={(event) =>
+                                      setEditSupplierForm((form) => ({ ...form, priority: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  />
+                                ) : (
+                                  supplier.priority
+                                )}
+                              </td>
+                              <td className={supplier.enabled ? "py-3 pr-3 text-emerald-300" : "py-3 pr-3 text-amber-300"}>
+                                {isEditing ? (
+                                  <label className="flex items-center gap-2 text-sm text-slate-200">
+                                    <input
+                                      type="checkbox"
+                                      checked={editSupplierForm.enabled}
+                                      onChange={(event) =>
+                                        setEditSupplierForm((form) => ({ ...form, enabled: event.target.checked }))
+                                      }
+                                      className="h-4 w-4"
+                                    />
+                                    启用
+                                  </label>
+                                ) : supplier.enabled ? (
+                                  "启用"
+                                ) : (
+                                  "禁用"
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <textarea
+                                    value={editSupplierForm.notes}
+                                    onChange={(event) =>
+                                      setEditSupplierForm((form) => ({ ...form, notes: event.target.value }))
+                                    }
+                                    className={`${inputClass} min-h-20 min-w-52`}
+                                  />
+                                ) : (
+                                  <span className="block max-w-64 leading-6">{supplier.notes || "暂无备注"}</span>
+                                )}
+                              </td>
+                              <td className="py-3">
+                                <div className="flex gap-2">
+                                  {isEditing ? (
+                                    <>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        disabled={supplierSubmitting}
+                                        onClick={() => void saveEditedSupplier(supplier)}
+                                        className="rounded-xl bg-white text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        保存修改
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={resetSupplierForm}
+                                        className="hover:bg-white/10 hover:text-white"
+                                      >
+                                        取消
+                                      </Button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => startEditSupplier(supplier)}
+                                        className="hover:bg-white/10 hover:text-white"
+                                      >
+                                        编辑
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        disabled={supplierSubmitting}
+                                        onClick={() => void toggleSupplierEnabled(supplier)}
+                                        className="hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {supplier.enabled ? "禁用" : "启用"}
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {adminSuppliers.length === 0 ? (
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
+                        暂无供应商线路数据。请先在 Supabase SQL Editor 执行最新 user-data-schema.sql。
+                      </div>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className="mb-6 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div>
                       <h3 className="text-xl font-bold">模型价格管理</h3>
                       <p className="mt-2 text-sm leading-6 text-slate-400">
                         这里管理平台对外 model name、上游模型名、输入/输出价格和启用状态。禁用模型后，API 中转会返回 400。
@@ -1662,6 +2280,20 @@ print(completion.choices[0].message.content)`;
                         className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
                         placeholder="deepseek"
                       />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">供应商线路</label>
+                      <select
+                        value={modelForm.supplierName}
+                        onChange={(event) => setModelForm((form) => ({ ...form, supplierName: event.target.value }))}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        {supplierOptions.map((supplier) => (
+                          <option key={supplier.name} value={supplier.name}>
+                            {supplier.name} - {supplier.displayName}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div>
                       <label className="text-sm text-slate-300">上游模型名</label>
@@ -1739,6 +2371,7 @@ print(completion.choices[0].message.content)`;
                             upstreamModel: "deepseek-v4-pro",
                             displayName: "DeepSeek V4 Pro",
                             provider: "deepseek",
+                            supplierName: "deepseek",
                             inputPrice: "0.02",
                             outputPrice: "0.02",
                             enabled: true,
@@ -1760,12 +2393,13 @@ print(completion.choices[0].message.content)`;
                   ) : null}
 
                   <div className="mt-6 overflow-x-auto">
-                    <table className="w-full min-w-[1180px] text-left text-sm">
+                    <table className="w-full min-w-[1320px] text-left text-sm">
                       <thead className="text-slate-400">
                         <tr className="border-b border-white/10">
                           <th className="py-3">model</th>
                           <th className="py-3">展示名称</th>
                           <th className="py-3">provider</th>
+                          <th className="py-3">供应商</th>
                           <th className="py-3">上游</th>
                           <th className="py-3">输入</th>
                           <th className="py-3">输出</th>
@@ -1808,6 +2442,25 @@ print(completion.choices[0].message.content)`;
                                   />
                                 ) : (
                                   model.provider
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {isEditing ? (
+                                  <select
+                                    value={editModelForm.supplierName}
+                                    onChange={(event) =>
+                                      setEditModelForm((form) => ({ ...form, supplierName: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  >
+                                    {supplierOptions.map((supplier) => (
+                                      <option key={supplier.name} value={supplier.name}>
+                                        {supplier.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  model.supplierName
                                 )}
                               </td>
                               <td className="py-3 pr-3 font-mono text-xs text-slate-300">
