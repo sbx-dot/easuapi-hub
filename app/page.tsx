@@ -46,6 +46,13 @@ type Tab =
   | "docs"
   | "admin";
 
+type DashboardNavItem = {
+  label: string;
+  id: string;
+  tab: Tab;
+  adminOnly?: boolean;
+};
+
 type ApiKeyItem = {
   id: string;
   name: string;
@@ -269,6 +276,36 @@ const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "admin", label: "管理后台", icon: <Settings className="h-4 w-4" /> },
 ];
 
+const dashboardNavItems: DashboardNavItem[] = [
+  { label: "概览", id: "overview", tab: "overview" },
+  { label: "API Key", id: "api-keys", tab: "keys" },
+  { label: "在线测试", id: "playground", tab: "playground" },
+  { label: "模型列表", id: "models", tab: "models" },
+  { label: "用量记录", id: "usage-logs", tab: "usage" },
+  { label: "充值中心", id: "recharge", tab: "recharge" },
+  { label: "订单记录", id: "orders", tab: "orders" },
+  { label: "API 文档", id: "docs", tab: "docs" },
+  { label: "管理后台", id: "admin", tab: "admin", adminOnly: true },
+  { label: "模型价格管理", id: "model-pricing", tab: "admin", adminOnly: true },
+  { label: "供应商线路", id: "suppliers", tab: "admin", adminOnly: true },
+  { label: "用户管理", id: "users", tab: "admin", adminOnly: true },
+  { label: "财务统计", id: "finance", tab: "admin", adminOnly: true },
+  { label: "异常请求", id: "errors", tab: "admin", adminOnly: true },
+  { label: "系统监控", id: "monitoring", tab: "admin", adminOnly: true },
+];
+
+const activeSectionIdByTab: Record<Tab, string> = {
+  overview: "overview",
+  keys: "api-keys",
+  playground: "playground",
+  models: "models",
+  usage: "usage-logs",
+  recharge: "recharge",
+  orders: "orders",
+  docs: "docs",
+  admin: "admin",
+};
+
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString("zh-CN", {
     month: "2-digit",
@@ -432,6 +469,8 @@ export default function EasyApiHubPage() {
   const [page, setPage] = useState<Page>("home");
   const [dashboardTab, setDashboardTab] = useState<Tab>("overview");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [functionNavOpen, setFunctionNavOpen] = useState(false);
+  const [dashboardScrollTarget, setDashboardScrollTarget] = useState("");
   const [loginOpen, setLoginOpen] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(Boolean(supabase));
@@ -494,6 +533,7 @@ export default function EasyApiHubPage() {
             displayName: "DeepSeek 官方",
           },
         ];
+  const functionNavItems = dashboardNavItems.filter((item) => !item.adminOnly || isAdmin);
 
   const pythonCode = useMemo(() => {
     return `from openai import OpenAI
@@ -754,6 +794,22 @@ print(completion.choices[0].message.content)`;
     };
   }, [loadDashboardData, resetDashboardData]);
 
+  useEffect(() => {
+    if (!dashboardScrollTarget || page !== "dashboard") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      document.getElementById(dashboardScrollTarget)?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      setDashboardScrollTarget("");
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [activeDashboardTab, dashboardScrollTarget, page]);
+
   const showCopyMessage = (message: string) => {
     if (copyTimer.current) {
       clearTimeout(copyTimer.current);
@@ -785,6 +841,13 @@ print(completion.choices[0].message.content)`;
     }
     setMenuOpen(false);
     setPage("dashboard");
+  };
+
+  const navigateDashboardModule = (item: DashboardNavItem) => {
+    setFunctionNavOpen(false);
+    setDashboardScrollTarget(item.id);
+    setPage("dashboard");
+    setDashboardTab(item.tab);
   };
 
   const closeLoginDialog = () => {
@@ -872,6 +935,7 @@ print(completion.choices[0].message.content)`;
 
     setSession(null);
     setPassword("");
+    setFunctionNavOpen(false);
     resetDashboardData();
     setPage("home");
   };
@@ -1434,6 +1498,70 @@ print(completion.choices[0].message.content)`;
           <div className="absolute bottom-24 right-10 h-80 w-80 rounded-full bg-violet-500/20 blur-3xl" />
         </div>
 
+        <Button
+          type="button"
+          onClick={() => setFunctionNavOpen(true)}
+          className="fixed right-4 top-28 z-40 rounded-2xl border border-cyan-300/30 bg-slate-900/90 text-white shadow-[0_0_24px_rgba(34,211,238,0.18)] backdrop-blur-xl hover:bg-slate-800"
+        >
+          <Menu className="mr-2 h-4 w-4" />
+          功能导航
+        </Button>
+
+        <div
+          className={`fixed inset-0 z-[70] transition ${
+            functionNavOpen ? "pointer-events-auto" : "pointer-events-none"
+          }`}
+        >
+          <button
+            type="button"
+            aria-label="关闭功能导航"
+            onClick={() => setFunctionNavOpen(false)}
+            className={`absolute inset-0 bg-slate-950/55 transition-opacity ${
+              functionNavOpen ? "opacity-100" : "opacity-0"
+            }`}
+          />
+          <aside
+            className={`absolute right-0 top-0 flex h-full w-[85vw] flex-col border-l border-cyan-300/20 bg-slate-950/90 shadow-2xl shadow-cyan-950/40 backdrop-blur-2xl transition-transform duration-300 sm:w-[420px] lg:w-[25vw] ${
+              functionNavOpen ? "translate-x-0" : "translate-x-full"
+            }`}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-white/10 p-5">
+              <div>
+                <p className="text-sm font-semibold text-cyan-300">后台导航</p>
+                <h2 className="mt-1 text-xl font-bold text-white">功能导航</h2>
+              </div>
+              <button
+                type="button"
+                aria-label="关闭功能导航"
+                onClick={() => setFunctionNavOpen(false)}
+                className="rounded-2xl border border-white/10 bg-white/5 p-2 text-slate-200 transition hover:bg-white/10 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <nav className="flex-1 space-y-2 overflow-y-auto p-5">
+              {functionNavItems.map((item) => {
+                const isActive = activeSectionIdByTab[activeDashboardTab] === item.id;
+
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => navigateDashboardModule(item)}
+                    className={`w-full rounded-2xl border px-4 py-3 text-left text-sm transition ${
+                      isActive
+                        ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100"
+                        : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/20 hover:bg-white/[0.08] hover:text-white"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </nav>
+          </aside>
+        </div>
+
         <header className="relative z-10 border-b border-white/10 bg-slate-950/75 backdrop-blur-xl">
           <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
             <button onClick={() => setPage("home")} className="flex items-center gap-2">
@@ -1502,7 +1630,7 @@ print(completion.choices[0].message.content)`;
           ) : null}
 
           {activeDashboardTab === "overview" ? (
-            <div>
+            <div id="overview" className="scroll-mt-28">
               <SectionTitle label="Overview" title="平台概览" desc="查看余额、请求数、密钥数量和模型数量。" />
               <div className="grid gap-4 md:grid-cols-4">
                 {[
@@ -1526,7 +1654,7 @@ print(completion.choices[0].message.content)`;
           ) : null}
 
           {activeDashboardTab === "keys" ? (
-            <div>
+            <div id="api-keys" className="scroll-mt-28">
               <SectionTitle label="API Key" title="密钥管理" desc="创建、复制、显示、隐藏和删除你的接口密钥。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
@@ -1617,7 +1745,7 @@ print(completion.choices[0].message.content)`;
           ) : null}
 
           {activeDashboardTab === "playground" ? (
-            <div>
+            <div id="playground" className="scroll-mt-28">
               <SectionTitle label="Playground" title="在线测试台" desc="当前是本地模拟请求，买完 API Key 后可以接真实模型。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
@@ -1652,7 +1780,7 @@ print(completion.choices[0].message.content)`;
           ) : null}
 
           {activeDashboardTab === "models" ? (
-            <div>
+            <div id="models" className="scroll-mt-28">
               <SectionTitle label="Models" title="模型列表" desc="这里展示对外模型别名、价格和路由说明。" />
               {modelsMessage ? (
                 <div className="mb-5 rounded-2xl border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
@@ -1689,7 +1817,7 @@ print(completion.choices[0].message.content)`;
           ) : null}
 
           {activeDashboardTab === "usage" ? (
-            <div>
+            <div id="usage-logs" className="scroll-mt-28">
               <SectionTitle label="Usage" title="用量记录" desc="从 Supabase usage_logs 表读取。当前测试台不会写入真实用量。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
@@ -1732,7 +1860,7 @@ print(completion.choices[0].message.content)`;
           ) : null}
 
           {activeDashboardTab === "recharge" ? (
-            <div>
+            <div id="recharge" className="scroll-mt-28">
               <SectionTitle label="Recharge" title="充值中心" desc="当前只保留演示按钮，不接支付；余额和订单需要后台人工处理。" />
               <div className="grid gap-4 md:grid-cols-4">
                 {[10, 50, 100, 500].map((amount) => (
@@ -1751,7 +1879,7 @@ print(completion.choices[0].message.content)`;
           ) : null}
 
           {activeDashboardTab === "orders" ? (
-            <div>
+            <div id="orders" className="scroll-mt-28">
               <SectionTitle label="Orders" title="订单记录" desc="从 Supabase orders 表读取，当前不允许前端自己创建订单。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
@@ -1790,7 +1918,7 @@ print(completion.choices[0].message.content)`;
           ) : null}
 
           {activeDashboardTab === "docs" ? (
-            <div>
+            <div id="docs" className="scroll-mt-28">
               <SectionTitle label="Docs" title="API 文档" desc="给用户复制 base_url、API Key 和接入代码。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
@@ -1853,7 +1981,7 @@ print(completion.choices[0].message.content)`;
           ) : null}
 
           {activeDashboardTab === "admin" && isAdmin ? (
-            <div>
+            <div id="admin" className="scroll-mt-28">
               <SectionTitle label="Admin" title="管理后台" desc="管理员人工处理充值，不接真实支付，不允许普通用户改余额。" />
               <Card className="mb-6 rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
@@ -1910,7 +2038,7 @@ print(completion.choices[0].message.content)`;
                   ) : null}
                 </CardContent>
               </Card>
-              <Card className="mb-6 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <Card id="suppliers" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -2233,7 +2361,7 @@ print(completion.choices[0].message.content)`;
                   </div>
                 </CardContent>
               </Card>
-              <Card className="mb-6 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <Card id="model-pricing" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -2616,15 +2744,33 @@ print(completion.choices[0].message.content)`;
                   </div>
                 </CardContent>
               </Card>
-              <div className="grid gap-4 md:grid-cols-3">
-                {["用户管理", "供应商线路", "财务统计", "异常请求", "系统监控"].map((item) => (
-                  <Card key={item} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
-                    <CardContent className="p-6">
-                      <Settings className="mb-4 h-6 w-6 text-cyan-300" />
-                      <h3 className="text-lg font-bold">{item}</h3>
-                      <p className="mt-2 text-sm leading-6 text-slate-400">当前是页面占位，后续接数据库和后端接口后可真实管理。</p>
-                    </CardContent>
-                  </Card>
+              <div className="grid gap-3 md:grid-cols-2">
+                {[
+                  ["users", "用户管理", "后续接入用户查询、封禁、额度调整和角色管理。"],
+                  ["finance", "财务统计", "后续展示充值、扣费、收入和余额异常汇总。"],
+                  ["errors", "异常请求", "后续聚合上游错误、限流、余额不足和失败请求。"],
+                  ["monitoring", "系统监控", "后续展示 QPS、延迟、可用率和供应商健康状态。"],
+                ].map(([id, title, desc]) => (
+                  <div
+                    id={id}
+                    key={id}
+                    className="scroll-mt-28 rounded-2xl border border-white/10 bg-white/[0.045] p-4 text-white shadow-[0_0_18px_rgba(34,211,238,0.06)]"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-200">
+                        <Settings className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-base font-bold">{title}</h3>
+                          <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-0.5 text-xs text-amber-100">
+                            未完成
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm leading-6 text-slate-400">{desc}</p>
+                      </div>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
