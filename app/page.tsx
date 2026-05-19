@@ -211,6 +211,7 @@ type AdminUserRoleFilter = "all" | "admin" | "user";
 type AdminUserSort = "balance_desc" | "balance_asc" | "last_usage_desc" | "last_usage_asc";
 type AdminUserDetailView = "apiKeys" | "usage" | "orders";
 type BalanceAdjustMode = "increase" | "decrease";
+type FinanceRange = "today" | "7d" | "30d" | "all";
 
 type AdminUserRow = {
   user_id: string;
@@ -257,6 +258,51 @@ type AdminUserUsageRow = {
 
 type AdminUserOrderRow = {
   id: string;
+  amount: number | string | null;
+  method: string | null;
+  status: string | null;
+  note: string | null;
+  created_at: string;
+};
+
+type FinanceSummaryRow = {
+  total_users: number | string | null;
+  total_balance: number | string | null;
+  total_recharge_amount: number | string | null;
+  total_consumption_amount: number | string | null;
+  today_consumption_amount: number | string | null;
+  today_call_count: number | string | null;
+  today_failed_count: number | string | null;
+  today_failure_rate: number | string | null;
+  average_cost_per_call: number | string | null;
+  cost_configured: boolean | null;
+  estimated_upstream_cost: number | string | null;
+  estimated_gross_profit: number | string | null;
+  range_call_count: number | string | null;
+  range_success_count: number | string | null;
+  range_failed_count: number | string | null;
+  range_consumption_amount: number | string | null;
+  range_recharge_amount: number | string | null;
+};
+
+type FinanceRankingRow = {
+  ranking_type: "top_spenders" | "top_rechargers" | "model_rankings" | "supplier_rankings";
+  label: string | null;
+  email: string | null;
+  model: string | null;
+  supplier_name: string | null;
+  total_amount: number | string | null;
+  call_count: number | string | null;
+  success_count: number | string | null;
+  failed_count: number | string | null;
+  token_count: number | string | null;
+  order_count: number | string | null;
+  last_usage_at: string | null;
+};
+
+type RecentFinanceOrderRow = {
+  id: string;
+  user_email: string | null;
   amount: number | string | null;
   method: string | null;
   status: string | null;
@@ -426,6 +472,27 @@ function formatModelPrice(value: number) {
   const text = normalized.toFixed(4).replace(/\.?0+$/u, "");
 
   return `¥${text || "0"} / 1K tokens`;
+}
+
+function formatMoney(value: number | string | null | undefined, digits = 2) {
+  const amount = Number(value ?? 0);
+  const normalized = Number.isFinite(amount) ? amount : 0;
+
+  return `¥${normalized.toFixed(digits)}`;
+}
+
+function formatNumber(value: number | string | null | undefined) {
+  const amount = Number(value ?? 0);
+  const normalized = Number.isFinite(amount) ? amount : 0;
+
+  return new Intl.NumberFormat("zh-CN").format(normalized);
+}
+
+function formatPercent(value: number | string | null | undefined) {
+  const amount = Number(value ?? 0);
+  const normalized = Number.isFinite(amount) ? amount : 0;
+
+  return `${normalized.toFixed(2)}%`;
 }
 
 function mapModel(row: ModelRow): ModelItem {
@@ -635,6 +702,12 @@ export default function EasyApiHubPage() {
   const [balanceAdjustAmount, setBalanceAdjustAmount] = useState("");
   const [balanceAdjustNote, setBalanceAdjustNote] = useState("");
   const [balanceAdjustSubmitting, setBalanceAdjustSubmitting] = useState(false);
+  const [financeRange, setFinanceRange] = useState<FinanceRange>("today");
+  const [financeSummary, setFinanceSummary] = useState<FinanceSummaryRow | null>(null);
+  const [financeRankings, setFinanceRankings] = useState<FinanceRankingRow[]>([]);
+  const [recentFinanceOrders, setRecentFinanceOrders] = useState<RecentFinanceOrderRow[]>([]);
+  const [financeLoading, setFinanceLoading] = useState(false);
+  const [financeMessage, setFinanceMessage] = useState("");
   const [modelsMessage, setModelsMessage] = useState("");
   const [modelForm, setModelForm] = useState<ModelFormState>(emptyModelForm);
   const [editModelForm, setEditModelForm] = useState<ModelFormState>(emptyModelForm);
@@ -667,6 +740,28 @@ export default function EasyApiHubPage() {
           },
         ];
   const functionNavItems = dashboardNavItems.filter((item) => !item.adminOnly || isAdmin);
+  const topSpenders = financeRankings.filter((item) => item.ranking_type === "top_spenders");
+  const topRechargers = financeRankings.filter((item) => item.ranking_type === "top_rechargers");
+  const modelFinanceRankings = financeRankings.filter((item) => item.ranking_type === "model_rankings");
+  const supplierFinanceRankings = financeRankings.filter((item) => item.ranking_type === "supplier_rankings");
+  const financeRangeLabel =
+    financeRange === "today" ? "今天" : financeRange === "7d" ? "7 天" : financeRange === "30d" ? "30 天" : "全部";
+  const financeStatCards = [
+    ["总用户数", formatNumber(financeSummary?.total_users), "profiles"],
+    ["总余额池", formatMoney(financeSummary?.total_balance, 4), "sum(balance)"],
+    ["累计充值金额", formatMoney(financeSummary?.total_recharge_amount, 2), "paid/manual/admin_adjust"],
+    ["累计消费金额", formatMoney(financeSummary?.total_consumption_amount, 4), "usage cost"],
+    ["今日消费金额", formatMoney(financeSummary?.today_consumption_amount, 4), "today"],
+    ["今日调用次数", formatNumber(financeSummary?.today_call_count), "calls"],
+    ["今日失败次数", formatNumber(financeSummary?.today_failed_count), "failed"],
+    ["失败率", formatPercent(financeSummary?.today_failure_rate), "today"],
+    ["平均单次消费", formatMoney(financeSummary?.average_cost_per_call, 6), "avg"],
+    [
+      "预估毛利",
+      financeSummary?.cost_configured ? formatMoney(financeSummary?.estimated_gross_profit, 4) : "成本价未配置",
+      financeSummary?.cost_configured ? `成本 ${formatMoney(financeSummary?.estimated_upstream_cost, 4)}` : "models 成本字段为 0",
+    ],
+  ];
 
   const pythonCode = useMemo(() => {
     return `from openai import OpenAI
@@ -734,6 +829,12 @@ print(completion.choices[0].message.content)`;
     setBalanceAdjustAmount("");
     setBalanceAdjustNote("");
     setBalanceAdjustSubmitting(false);
+    setFinanceRange("today");
+    setFinanceSummary(null);
+    setFinanceRankings([]);
+    setRecentFinanceOrders([]);
+    setFinanceLoading(false);
+    setFinanceMessage("");
     setModelForm(emptyModelForm);
     setEditModelForm(emptyModelForm);
     setEditingModelId("");
@@ -851,6 +952,49 @@ print(completion.choices[0].message.content)`;
     }
   }, [userRoleFilter, userSearch, userSort]);
 
+  const loadAdminFinance = useCallback(async () => {
+    if (!supabase) {
+      setFinanceSummary(null);
+      setFinanceRankings([]);
+      setRecentFinanceOrders([]);
+      return;
+    }
+
+    setFinanceLoading(true);
+    setFinanceMessage("");
+
+    try {
+      const [summaryResult, rankingsResult, ordersResult] = await Promise.all([
+        supabase.rpc("get_finance_summary_admin", {
+          range_filter: financeRange,
+        }),
+        supabase.rpc("get_finance_rankings_admin", {
+          range_filter: financeRange,
+        }),
+        supabase.rpc("get_recent_orders_admin"),
+      ]);
+
+      const firstError = summaryResult.error ?? rankingsResult.error ?? ordersResult.error;
+
+      if (firstError) {
+        throw firstError;
+      }
+
+      const summaryData = Array.isArray(summaryResult.data)
+        ? (summaryResult.data[0] as FinanceSummaryRow | undefined)
+        : (summaryResult.data as FinanceSummaryRow | null);
+
+      setFinanceSummary(summaryData ?? null);
+      setFinanceRankings((rankingsResult.data ?? []) as FinanceRankingRow[]);
+      setRecentFinanceOrders((ordersResult.data ?? []) as RecentFinanceOrderRow[]);
+    } catch (error) {
+      console.error(error);
+      setFinanceMessage("财务统计读取失败，请确认最新 finance admin RPC 已在 Supabase SQL Editor 执行。");
+    } finally {
+      setFinanceLoading(false);
+    }
+  }, [financeRange]);
+
   const loadDashboardData = useCallback(async (nextSession: Session) => {
     if (!supabase) {
       resetDashboardData();
@@ -946,6 +1090,20 @@ print(completion.choices[0].message.content)`;
 
     return () => window.clearTimeout(timer);
   }, [isAdmin, loadAdminUsers]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (isAdmin) {
+        void loadAdminFinance();
+      } else {
+        setFinanceSummary(null);
+        setFinanceRankings([]);
+        setRecentFinanceOrders([]);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [isAdmin, loadAdminFinance]);
 
   useEffect(() => {
     if (!supabase) {
@@ -2739,6 +2897,255 @@ print(completion.choices[0].message.content)`;
                   ) : null}
                 </CardContent>
               </Card>
+              <Card id="finance" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-xl font-bold">财务统计</h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-400">
+                        汇总平台充值、消费、余额、订单、用量和利润估算。第一版通过 admin RPC 聚合全站数据，不向前端暴露 service role key。
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      <select
+                        value={financeRange}
+                        onChange={(event) => setFinanceRange(event.target.value as FinanceRange)}
+                        className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-2 text-sm text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="today">今天</option>
+                        <option value="7d">7 天</option>
+                        <option value="30d">30 天</option>
+                        <option value="all">全部</option>
+                      </select>
+                      <Button
+                        type="button"
+                        onClick={() => void loadAdminFinance()}
+                        disabled={financeLoading}
+                        variant="outline"
+                        className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {financeLoading ? "刷新中..." : "刷新财务"}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {financeMessage ? (
+                    <div className="mb-5 rounded-2xl border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                      {financeMessage}
+                    </div>
+                  ) : null}
+
+                  {financeLoading && !financeSummary ? (
+                    <div className="mb-5 rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-300">
+                      正在读取财务统计...
+                    </div>
+                  ) : null}
+
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                    {financeStatCards.map(([label, value, hint]) => (
+                      <div
+                        key={label}
+                        className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 shadow-[0_0_18px_rgba(34,211,238,0.06)]"
+                      >
+                        <p className="text-sm text-slate-400">{label}</p>
+                        <p className="mt-2 break-words text-2xl font-black text-cyan-200">{value}</p>
+                        <p className="mt-2 text-xs text-slate-500">{hint}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-6 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h4 className="text-lg font-bold">趋势统计</h4>
+                        <p className="mt-1 text-sm text-slate-400">当前范围：{financeRangeLabel}</p>
+                      </div>
+                      {!financeSummary?.cost_configured ? (
+                        <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1 text-xs text-amber-100">
+                          成本价未配置
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-5">
+                      {[
+                        ["调用次数", formatNumber(financeSummary?.range_call_count)],
+                        ["成功次数", formatNumber(financeSummary?.range_success_count)],
+                        ["失败次数", formatNumber(financeSummary?.range_failed_count)],
+                        ["消费金额", formatMoney(financeSummary?.range_consumption_amount, 4)],
+                        ["充值金额", formatMoney(financeSummary?.range_recharge_amount, 2)],
+                      ].map(([label, value]) => (
+                        <div key={label} className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+                          <p className="text-xs text-slate-400">{label}</p>
+                          <p className="mt-2 text-lg font-bold text-white">{value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-6 grid gap-4 xl:grid-cols-2">
+                    <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                      <h4 className="mb-4 text-lg font-bold">消费最多用户 Top 10</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[560px] text-left text-sm">
+                          <thead className="text-slate-400">
+                            <tr className="border-b border-white/10">
+                              <th className="py-3">邮箱</th>
+                              <th className="py-3">消费金额</th>
+                              <th className="py-3">调用</th>
+                              <th className="py-3">最近调用</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {topSpenders.map((item) => (
+                              <tr key={`spender-${item.label}`} className="border-b border-white/5">
+                                <td className="py-3 pr-3 font-mono text-cyan-300">{item.email ?? item.label}</td>
+                                <td className="py-3 pr-3 text-slate-300">{formatMoney(item.total_amount, 4)}</td>
+                                <td className="py-3 pr-3 text-slate-300">{formatNumber(item.call_count)}</td>
+                                <td className="py-3 pr-3 text-slate-300">{formatNullableDateTime(item.last_usage_at)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {topSpenders.length === 0 ? (
+                          <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-400">
+                            暂无消费排行数据。
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                      <h4 className="mb-4 text-lg font-bold">充值最多用户 Top 10</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[480px] text-left text-sm">
+                          <thead className="text-slate-400">
+                            <tr className="border-b border-white/10">
+                              <th className="py-3">邮箱</th>
+                              <th className="py-3">充值金额</th>
+                              <th className="py-3">订单数</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {topRechargers.map((item) => (
+                              <tr key={`recharger-${item.label}`} className="border-b border-white/5">
+                                <td className="py-3 pr-3 font-mono text-cyan-300">{item.email ?? item.label}</td>
+                                <td className="py-3 pr-3 text-slate-300">{formatMoney(item.total_amount, 2)}</td>
+                                <td className="py-3 pr-3 text-slate-300">{formatNumber(item.order_count)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {topRechargers.length === 0 ? (
+                          <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-400">
+                            暂无充值排行数据。
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                      <h4 className="mb-4 text-lg font-bold">模型消费排行</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[560px] text-left text-sm">
+                          <thead className="text-slate-400">
+                            <tr className="border-b border-white/10">
+                              <th className="py-3">model</th>
+                              <th className="py-3">调用</th>
+                              <th className="py-3">tokens</th>
+                              <th className="py-3">消费</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {modelFinanceRankings.map((item) => (
+                              <tr key={`model-${item.model}`} className="border-b border-white/5">
+                                <td className="py-3 pr-3 font-mono text-cyan-300">{item.model ?? "unknown"}</td>
+                                <td className="py-3 pr-3 text-slate-300">{formatNumber(item.call_count)}</td>
+                                <td className="py-3 pr-3 text-slate-300">{formatNumber(item.token_count)}</td>
+                                <td className="py-3 pr-3 text-slate-300">{formatMoney(item.total_amount, 4)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {modelFinanceRankings.length === 0 ? (
+                          <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-400">
+                            暂无模型排行数据。
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                      <h4 className="mb-4 text-lg font-bold">供应商调用排行</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[620px] text-left text-sm">
+                          <thead className="text-slate-400">
+                            <tr className="border-b border-white/10">
+                              <th className="py-3">supplier</th>
+                              <th className="py-3">调用</th>
+                              <th className="py-3">成功</th>
+                              <th className="py-3">失败</th>
+                              <th className="py-3">消费</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {supplierFinanceRankings.map((item) => (
+                              <tr key={`supplier-${item.supplier_name}`} className="border-b border-white/5">
+                                <td className="py-3 pr-3 font-mono text-cyan-300">
+                                  {item.label ?? item.supplier_name ?? "unknown"}
+                                </td>
+                                <td className="py-3 pr-3 text-slate-300">{formatNumber(item.call_count)}</td>
+                                <td className="py-3 pr-3 text-emerald-300">{formatNumber(item.success_count)}</td>
+                                <td className="py-3 pr-3 text-amber-300">{formatNumber(item.failed_count)}</td>
+                                <td className="py-3 pr-3 text-slate-300">{formatMoney(item.total_amount, 4)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {supplierFinanceRankings.length === 0 ? (
+                          <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-400">
+                            暂无供应商排行数据。
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                    <h4 className="mb-4 text-lg font-bold">最近 20 条订单</h4>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[900px] text-left text-sm">
+                        <thead className="text-slate-400">
+                          <tr className="border-b border-white/10">
+                            <th className="py-3">用户邮箱</th>
+                            <th className="py-3">金额</th>
+                            <th className="py-3">method</th>
+                            <th className="py-3">status</th>
+                            <th className="py-3">note</th>
+                            <th className="py-3">created_at</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {recentFinanceOrders.map((order) => (
+                            <tr key={order.id} className="border-b border-white/5">
+                              <td className="py-3 pr-3 font-mono text-cyan-300">{order.user_email ?? "unknown"}</td>
+                              <td className="py-3 pr-3 text-slate-300">{formatMoney(order.amount, 2)}</td>
+                              <td className="py-3 pr-3 text-slate-300">{order.method ?? "unknown"}</td>
+                              <td className="py-3 pr-3 text-emerald-300">{order.status ?? "pending"}</td>
+                              <td className="py-3 pr-3 text-slate-300">{order.note ?? "无"}</td>
+                              <td className="py-3 pr-3 text-slate-300">{formatDateTime(order.created_at)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {recentFinanceOrders.length === 0 ? (
+                        <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-400">
+                          暂无订单数据。
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
               <Card id="suppliers" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
@@ -3447,7 +3854,6 @@ print(completion.choices[0].message.content)`;
               </Card>
               <div className="grid gap-3 md:grid-cols-2">
                 {[
-                  ["finance", "财务统计", "后续展示充值、扣费、收入和余额异常汇总。"],
                   ["errors", "异常请求", "后续聚合上游错误、限流、余额不足和失败请求。"],
                   ["monitoring", "系统监控", "后续展示 QPS、延迟、可用率和供应商健康状态。"],
                 ].map(([id, title, desc]) => (

@@ -69,6 +69,8 @@ create table if not exists public.models (
   provider text not null default 'deepseek',
   input_price_per_1k numeric not null default 0,
   output_price_per_1k numeric not null default 0,
+  input_cost_per_1k numeric not null default 0,
+  output_cost_per_1k numeric not null default 0,
   enabled boolean not null default true,
   description text,
   sort_order integer not null default 100,
@@ -78,6 +80,12 @@ create table if not exists public.models (
 
 alter table public.models
 add column if not exists supplier_name text not null default 'deepseek';
+
+alter table public.models
+add column if not exists input_cost_per_1k numeric not null default 0;
+
+alter table public.models
+add column if not exists output_cost_per_1k numeric not null default 0;
 
 create index if not exists api_keys_user_id_idx on public.api_keys(user_id);
 create index if not exists api_keys_user_id_revoked_idx on public.api_keys(user_id, revoked);
@@ -149,6 +157,8 @@ grant insert (
   provider,
   input_price_per_1k,
   output_price_per_1k,
+  input_cost_per_1k,
+  output_cost_per_1k,
   enabled,
   description,
   sort_order
@@ -160,6 +170,8 @@ grant update (
   provider,
   input_price_per_1k,
   output_price_per_1k,
+  input_cost_per_1k,
+  output_cost_per_1k,
   enabled,
   description,
   sort_order
@@ -739,6 +751,333 @@ $$;
 
 revoke all on function public.list_user_orders_admin(uuid, integer) from public;
 grant execute on function public.list_user_orders_admin(uuid, integer) to authenticated;
+
+drop function if exists public.get_finance_summary_admin(text);
+create or replace function public.get_finance_summary_admin(range_filter text default 'today')
+returns table (
+  total_users bigint,
+  total_balance numeric,
+  total_recharge_amount numeric,
+  total_consumption_amount numeric,
+  today_consumption_amount numeric,
+  today_call_count bigint,
+  today_failed_count bigint,
+  today_failure_rate numeric,
+  average_cost_per_call numeric,
+  cost_configured boolean,
+  estimated_upstream_cost numeric,
+  estimated_gross_profit numeric,
+  range_call_count bigint,
+  range_success_count bigint,
+  range_failed_count bigint,
+  range_consumption_amount numeric,
+  range_recharge_amount numeric
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  range_start timestamptz;
+  today_start timestamptz := date_trunc('day', now());
+  has_cost_config boolean;
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read finance summary';
+  end if;
+
+  range_start := case coalesce(range_filter, 'today')
+    when 'today' then today_start
+    when '7d' then now() - interval '7 days'
+    when '30d' then now() - interval '30 days'
+    else null
+  end;
+
+  select exists (
+    select 1
+    from public.models
+    where input_cost_per_1k > 0
+       or output_cost_per_1k > 0
+  )
+  into has_cost_config;
+
+  return query
+  with usage_with_cost as (
+    select
+      usage_logs.*,
+      coalesce(models.input_cost_per_1k, 0) as input_cost_per_1k,
+      coalesce(models.output_cost_per_1k, 0) as output_cost_per_1k
+    from public.usage_logs
+    left join public.models on models.name = usage_logs.model
+  ),
+  all_usage as (
+    select
+      count(*) as call_count,
+      count(*) filter (where status = 'success') as success_count,
+      count(*) filter (where status <> 'success') as failed_count,
+      coalesce(sum(cost) filter (where status = 'success'), 0) as consumption_amount,
+      coalesce(
+        sum(
+          ((prompt_tokens::numeric / 1000) * input_cost_per_1k)
+          + ((completion_tokens::numeric / 1000) * output_cost_per_1k)
+        ) filter (where status = 'success'),
+        0
+      ) as upstream_cost
+    from usage_with_cost
+  ),
+  today_usage as (
+    select
+      count(*) as call_count,
+      count(*) filter (where status <> 'success') as failed_count,
+      coalesce(sum(cost) filter (where status = 'success'), 0) as consumption_amount
+    from public.usage_logs
+    where created_at >= today_start
+  ),
+  range_usage as (
+    select
+      count(*) as call_count,
+      count(*) filter (where status = 'success') as success_count,
+      count(*) filter (where status <> 'success') as failed_count,
+      coalesce(sum(cost) filter (where status = 'success'), 0) as consumption_amount
+    from public.usage_logs
+    where range_start is null or created_at >= range_start
+  ),
+  recharge_all as (
+    select coalesce(sum(amount), 0) as amount
+    from public.orders
+    where amount > 0
+      and (status = 'paid' or method in ('manual', 'admin_adjust'))
+  ),
+  recharge_range as (
+    select coalesce(sum(amount), 0) as amount
+    from public.orders
+    where amount > 0
+      and (status = 'paid' or method in ('manual', 'admin_adjust'))
+      and (range_start is null or created_at >= range_start)
+  )
+  select
+    (select count(*) from public.profiles)::bigint,
+    (select coalesce(sum(balance), 0) from public.profiles),
+    recharge_all.amount,
+    all_usage.consumption_amount,
+    today_usage.consumption_amount,
+    today_usage.call_count::bigint,
+    today_usage.failed_count::bigint,
+    case
+      when today_usage.call_count > 0 then round((today_usage.failed_count::numeric / today_usage.call_count::numeric) * 100, 2)
+      else 0
+    end,
+    case
+      when all_usage.success_count > 0 then round(all_usage.consumption_amount / all_usage.success_count::numeric, 6)
+      else 0
+    end,
+    has_cost_config,
+    case when has_cost_config then all_usage.upstream_cost else 0 end,
+    case when has_cost_config then all_usage.consumption_amount - all_usage.upstream_cost else 0 end,
+    range_usage.call_count::bigint,
+    range_usage.success_count::bigint,
+    range_usage.failed_count::bigint,
+    range_usage.consumption_amount,
+    recharge_range.amount
+  from all_usage, today_usage, range_usage, recharge_all, recharge_range;
+end;
+$$;
+
+revoke all on function public.get_finance_summary_admin(text) from public;
+grant execute on function public.get_finance_summary_admin(text) to authenticated;
+
+drop function if exists public.get_finance_rankings_admin(text);
+create or replace function public.get_finance_rankings_admin(range_filter text default '30d')
+returns table (
+  ranking_type text,
+  label text,
+  email text,
+  model text,
+  supplier_name text,
+  total_amount numeric,
+  call_count bigint,
+  success_count bigint,
+  failed_count bigint,
+  token_count bigint,
+  order_count bigint,
+  last_usage_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  range_start timestamptz;
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read finance rankings';
+  end if;
+
+  range_start := case coalesce(range_filter, '30d')
+    when 'today' then date_trunc('day', now())
+    when '7d' then now() - interval '7 days'
+    when '30d' then now() - interval '30 days'
+    else null
+  end;
+
+  return query
+  with filtered_usage as (
+    select *
+    from public.usage_logs
+    where range_start is null or created_at >= range_start
+  ),
+  filtered_orders as (
+    select *
+    from public.orders
+    where amount > 0
+      and (status = 'paid' or method in ('manual', 'admin_adjust'))
+      and (range_start is null or created_at >= range_start)
+  ),
+  top_spenders as (
+    select
+      'top_spenders'::text as ranking_type,
+      coalesce(profiles.email, 'unknown') as label,
+      profiles.email,
+      null::text as model,
+      null::text as supplier_name,
+      coalesce(sum(filtered_usage.cost) filter (where filtered_usage.status = 'success'), 0) as total_amount,
+      count(*)::bigint as call_count,
+      count(*) filter (where filtered_usage.status = 'success')::bigint as success_count,
+      count(*) filter (where filtered_usage.status <> 'success')::bigint as failed_count,
+      coalesce(sum(filtered_usage.prompt_tokens + filtered_usage.completion_tokens), 0)::bigint as token_count,
+      0::bigint as order_count,
+      max(filtered_usage.created_at) as last_usage_at
+    from filtered_usage
+    left join public.profiles on profiles.id = filtered_usage.user_id
+    group by profiles.email
+    order by total_amount desc
+    limit 10
+  ),
+  top_rechargers as (
+    select
+      'top_rechargers'::text as ranking_type,
+      coalesce(profiles.email, 'unknown') as label,
+      profiles.email,
+      null::text as model,
+      null::text as supplier_name,
+      coalesce(sum(filtered_orders.amount), 0) as total_amount,
+      0::bigint as call_count,
+      0::bigint as success_count,
+      0::bigint as failed_count,
+      0::bigint as token_count,
+      count(*)::bigint as order_count,
+      null::timestamptz as last_usage_at
+    from filtered_orders
+    left join public.profiles on profiles.id = filtered_orders.user_id
+    group by profiles.email
+    order by total_amount desc
+    limit 10
+  ),
+  model_rankings as (
+    select
+      'model_rankings'::text as ranking_type,
+      filtered_usage.model as label,
+      null::text as email,
+      filtered_usage.model,
+      null::text as supplier_name,
+      coalesce(sum(filtered_usage.cost) filter (where filtered_usage.status = 'success'), 0) as total_amount,
+      count(*)::bigint as call_count,
+      count(*) filter (where filtered_usage.status = 'success')::bigint as success_count,
+      count(*) filter (where filtered_usage.status <> 'success')::bigint as failed_count,
+      coalesce(sum(filtered_usage.prompt_tokens + filtered_usage.completion_tokens), 0)::bigint as token_count,
+      0::bigint as order_count,
+      max(filtered_usage.created_at) as last_usage_at
+    from filtered_usage
+    group by filtered_usage.model
+    order by total_amount desc, call_count desc
+    limit 10
+  ),
+  supplier_rankings as (
+    select
+      'supplier_rankings'::text as ranking_type,
+      coalesce(suppliers.display_name, filtered_usage.supplier_name, 'unknown') as label,
+      null::text as email,
+      null::text as model,
+      coalesce(filtered_usage.supplier_name, 'unknown') as supplier_name,
+      coalesce(sum(filtered_usage.cost) filter (where filtered_usage.status = 'success'), 0) as total_amount,
+      count(*)::bigint as call_count,
+      count(*) filter (where filtered_usage.status = 'success')::bigint as success_count,
+      count(*) filter (where filtered_usage.status <> 'success')::bigint as failed_count,
+      coalesce(sum(filtered_usage.prompt_tokens + filtered_usage.completion_tokens), 0)::bigint as token_count,
+      0::bigint as order_count,
+      max(filtered_usage.created_at) as last_usage_at
+    from filtered_usage
+    left join public.suppliers on suppliers.name = filtered_usage.supplier_name
+    group by filtered_usage.supplier_name, suppliers.display_name
+    order by call_count desc, total_amount desc
+    limit 10
+  )
+  select * from top_spenders
+  union all
+  select * from top_rechargers
+  union all
+  select * from model_rankings
+  union all
+  select * from supplier_rankings;
+end;
+$$;
+
+revoke all on function public.get_finance_rankings_admin(text) from public;
+grant execute on function public.get_finance_rankings_admin(text) to authenticated;
+
+drop function if exists public.get_recent_orders_admin();
+create or replace function public.get_recent_orders_admin()
+returns table (
+  id uuid,
+  user_email text,
+  amount numeric,
+  method text,
+  status text,
+  note text,
+  created_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read recent orders';
+  end if;
+
+  return query
+  select
+    orders.id,
+    profiles.email,
+    orders.amount,
+    orders.method,
+    orders.status,
+    orders.note,
+    orders.created_at
+  from public.orders
+  left join public.profiles on profiles.id = orders.user_id
+  order by orders.created_at desc
+  limit 20;
+end;
+$$;
+
+revoke all on function public.get_recent_orders_admin() from public;
+grant execute on function public.get_recent_orders_admin() to authenticated;
 
 drop policy if exists "Users can read own profile" on public.profiles;
 create policy "Users can read own profile"
