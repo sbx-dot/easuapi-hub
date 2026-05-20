@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
@@ -13,6 +13,7 @@ type ChatCompletionRequest = {
 type ApiKeyRow = {
   id: string;
   user_id: string;
+  key_prefix: string;
   revoked: boolean;
 };
 
@@ -58,10 +59,26 @@ type RateLimitBucket = {
   resetAt: number;
 };
 
+type RequestLimitError = {
+  code: string;
+  message: string;
+};
+
+type UsageLogStatus = "success" | "failed" | "blocked" | "rate_limited";
+
+type RequestLogContext = {
+  requestId: string;
+  startedAt: number;
+  ipHash: string | null;
+  userAgentHash: string | null;
+};
+
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 20;
 const MAX_MESSAGES_JSON_LENGTH = 20_000;
 const MAX_TOKENS_LIMIT = 4096;
+const API_KEY_PREFIX_LENGTH = 16;
+const UPSTREAM_TIMEOUT_MS = 45_000;
 const rateLimitBuckets = new Map<string, RateLimitBucket>();
 
 const corsHeaders = {
@@ -80,12 +97,13 @@ function jsonResponse(body: unknown, init?: ResponseInit) {
   });
 }
 
-function errorResponse(message: string, status: number, details?: unknown) {
+function errorResponse(message: string, status: number, details?: unknown, requestId?: string) {
   return jsonResponse(
     {
       error: {
         message,
         details,
+        request_id: requestId,
       },
     },
     { status }
@@ -98,6 +116,47 @@ function normalizeBaseUrl(url: string) {
 
 function sha256Hex(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function createLogContext(request: Request): RequestLogContext {
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const ipValue =
+    request.headers.get("cf-connecting-ip")?.trim() ||
+    request.headers.get("x-real-ip")?.trim() ||
+    forwardedFor ||
+    "";
+  const userAgent = request.headers.get("user-agent")?.trim() || "";
+
+  return {
+    requestId: randomUUID(),
+    startedAt: Date.now(),
+    ipHash: ipValue ? sha256Hex(ipValue) : null,
+    userAgentHash: userAgent ? sha256Hex(userAgent) : null,
+  };
+}
+
+function readLatencyMs(context: RequestLogContext) {
+  return Math.max(0, Date.now() - context.startedAt);
+}
+
+function readApiKeyPrefix(value: string) {
+  return value ? value.slice(0, API_KEY_PREFIX_LENGTH) : null;
+}
+
+function truncateErrorMessage(value: unknown) {
+  if (typeof value === "string") {
+    return value.slice(0, 500);
+  }
+
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  try {
+    return JSON.stringify(value).slice(0, 500);
+  } catch {
+    return "Unknown error";
+  }
 }
 
 function getBearerToken(request: Request) {
@@ -164,19 +223,28 @@ function checkRateLimit(keyHash: string) {
   };
 }
 
-function validateRequestLimits(body: ChatCompletionRequest) {
+function validateRequestLimits(body: ChatCompletionRequest): RequestLimitError | null {
   if (body.stream === true) {
-    return "Streaming is not supported in this first version. Please omit stream or set stream=false.";
+    return {
+      code: "stream_not_supported",
+      message: "Streaming is not supported in this first version. Please omit stream or set stream=false.",
+    };
   }
 
   if (!Array.isArray(body.messages)) {
-    return "messages must be an array";
+    return {
+      code: "invalid_messages",
+      message: "messages must be an array",
+    };
   }
 
   const messagesLength = JSON.stringify(body.messages).length;
 
   if (messagesLength > MAX_MESSAGES_JSON_LENGTH) {
-    return `messages is too large. Total serialized messages length must be <= ${MAX_MESSAGES_JSON_LENGTH} characters.`;
+    return {
+      code: "messages_too_long",
+      message: `messages is too large. Total serialized messages length must be <= ${MAX_MESSAGES_JSON_LENGTH} characters.`,
+    };
   }
 
   const maxTokens = body.max_tokens;
@@ -185,14 +253,19 @@ function validateRequestLimits(body: ChatCompletionRequest) {
     maxTokens !== undefined &&
     (typeof maxTokens !== "number" || !Number.isFinite(maxTokens) || maxTokens > MAX_TOKENS_LIMIT)
   ) {
-    return `max_tokens must be a number less than or equal to ${MAX_TOKENS_LIMIT}.`;
+    return {
+      code: "max_tokens_exceeded",
+      message: `max_tokens must be a number less than or equal to ${MAX_TOKENS_LIMIT}.`,
+    };
   }
 
-  return "";
+  return null;
 }
 
-async function recordUsage({
+async function recordUsageEvent({
   userId,
+  apiKeyId,
+  apiKeyPrefix,
   model,
   supplierName,
   promptTokens,
@@ -200,22 +273,32 @@ async function recordUsage({
   cost,
   status,
   balance,
+  httpStatus,
+  errorCode,
+  errorMessage,
+  context,
 }: {
-  userId: string;
+  userId?: string | null;
+  apiKeyId?: string | null;
+  apiKeyPrefix?: string | null;
   model: string;
-  supplierName: string;
+  supplierName?: string | null;
   promptTokens: number;
   completionTokens: number;
   cost: number;
-  status: "success" | "failed";
-  balance: number;
+  status: UsageLogStatus;
+  balance?: number;
+  httpStatus?: number | null;
+  errorCode?: string | null;
+  errorMessage?: unknown;
+  context: RequestLogContext;
 }) {
   const supabase = getSupabaseAdmin();
 
-  if (status === "success" && cost > 0) {
+  if (status === "success" && cost > 0 && userId) {
     const { error: balanceError } = await supabase
       .from("profiles")
-      .update({ balance: Math.max(0, balance - cost) })
+      .update({ balance: Math.max(0, Number(balance ?? 0) - cost) })
       .eq("id", userId);
 
     if (balanceError) {
@@ -224,13 +307,22 @@ async function recordUsage({
   }
 
   const { error: usageError } = await supabase.from("usage_logs").insert({
-    user_id: userId,
-    model,
-    supplier_name: supplierName,
+    user_id: userId ?? null,
+    api_key_id: apiKeyId ?? null,
+    api_key_prefix: apiKeyPrefix ?? null,
+    model: model || "unknown",
+    supplier_name: supplierName ?? null,
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
     cost,
     status,
+    error_code: errorCode ?? null,
+    error_message: truncateErrorMessage(errorMessage),
+    http_status: httpStatus ?? (status === "success" ? 200 : null),
+    request_id: context.requestId,
+    latency_ms: readLatencyMs(context),
+    ip_hash: context.ipHash,
+    user_agent_hash: context.userAgentHash,
   });
 
   if (usageError) {
@@ -238,20 +330,47 @@ async function recordUsage({
   }
 }
 
-async function safeRecordFailedUsage(userId: string, model: string, supplierName: string, balance: number) {
+async function safeRecordErrorUsage({
+  userId,
+  apiKeyId,
+  apiKeyPrefix,
+  model,
+  supplierName,
+  status,
+  httpStatus,
+  errorCode,
+  errorMessage,
+  context,
+}: {
+  userId?: string | null;
+  apiKeyId?: string | null;
+  apiKeyPrefix?: string | null;
+  model?: string | null;
+  supplierName?: string | null;
+  status: Exclude<UsageLogStatus, "success">;
+  httpStatus: number;
+  errorCode: string;
+  errorMessage: unknown;
+  context: RequestLogContext;
+}) {
   try {
-    await recordUsage({
+    await recordUsageEvent({
       userId,
-      model,
+      apiKeyId,
+      apiKeyPrefix,
+      model: model || "unknown",
       supplierName,
       promptTokens: 0,
       completionTokens: 0,
       cost: 0,
-      status: "failed",
-      balance,
+      status,
+      httpStatus,
+      errorCode,
+      errorMessage,
+      context,
     });
   } catch (error) {
-    console.error("Failed to record failed usage", error);
+    console.error("Failed to record error usage", error);
   }
 }
 
@@ -263,34 +382,36 @@ export async function OPTIONS() {
 }
 
 export async function POST(request: Request) {
+  const context = createLogContext(request);
   const userApiKey = getBearerToken(request);
-
-  if (!userApiKey) {
-    return errorResponse("Missing Authorization header. Use: Authorization: Bearer YOUR_API_KEY", 401);
-  }
-
-  let body: ChatCompletionRequest;
-
-  try {
-    body = (await request.json()) as ChatCompletionRequest;
-  } catch {
-    return errorResponse("Invalid JSON request body", 400);
-  }
-
-  const requestLimitError = validateRequestLimits(body);
-
-  if (requestLimitError) {
-    return errorResponse(requestLimitError, 400);
-  }
-
+  const suppliedKeyPrefix = readApiKeyPrefix(userApiKey);
   const fallbackUpstreamApiKey = process.env.UPSTREAM_API_KEY?.trim();
   const defaultModel = process.env.UPSTREAM_DEFAULT_MODEL?.trim() || "deepseek-chat";
-  const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : defaultModel;
 
-  let apiKeyRow: ApiKeyRow;
-  let balance: number;
+  if (!userApiKey) {
+    await safeRecordErrorUsage({
+      model: defaultModel,
+      status: "blocked",
+      httpStatus: 401,
+      errorCode: "missing_api_key",
+      errorMessage: "Missing Authorization header",
+      context,
+    });
+
+    return errorResponse(
+      "Missing Authorization header. Use: Authorization: Bearer YOUR_API_KEY",
+      401,
+      undefined,
+      context.requestId
+    );
+  }
+
+  let body: ChatCompletionRequest = {};
+  let apiKeyRow: ApiKeyRow | null = null;
+  let balance = 0;
   let modelPricing: ModelPricingRow | null = null;
   let supplier: SupplierRow | null = null;
+  let model = defaultModel;
 
   try {
     const supabase = getSupabaseAdmin();
@@ -298,7 +419,7 @@ export async function POST(request: Request) {
 
     const { data: keyData, error: keyError } = await supabase
       .from("api_keys")
-      .select("id,user_id,revoked")
+      .select("id,user_id,key_prefix,revoked")
       .eq("key_hash", keyHash)
       .eq("revoked", false)
       .maybeSingle();
@@ -308,7 +429,17 @@ export async function POST(request: Request) {
     }
 
     if (!keyData) {
-      return errorResponse("Invalid API key", 401);
+      await safeRecordErrorUsage({
+        apiKeyPrefix: suppliedKeyPrefix,
+        model,
+        status: "blocked",
+        httpStatus: 401,
+        errorCode: "invalid_api_key",
+        errorMessage: "Invalid API key",
+        context,
+      });
+
+      return errorResponse("Invalid API key", 401, undefined, context.requestId);
     }
 
     apiKeyRow = keyData as ApiKeyRow;
@@ -316,10 +447,23 @@ export async function POST(request: Request) {
     const rateLimit = checkRateLimit(keyHash);
 
     if (!rateLimit.allowed) {
+      await safeRecordErrorUsage({
+        userId: apiKeyRow.user_id,
+        apiKeyId: apiKeyRow.id,
+        apiKeyPrefix: apiKeyRow.key_prefix,
+        model,
+        status: "rate_limited",
+        httpStatus: 429,
+        errorCode: "rate_limited",
+        errorMessage: "Rate limit exceeded. Each API Key can make at most 20 requests per minute.",
+        context,
+      });
+
       return jsonResponse(
         {
           error: {
             message: "Rate limit exceeded. Each API Key can make at most 20 requests per minute.",
+            request_id: context.requestId,
           },
         },
         {
@@ -331,6 +475,44 @@ export async function POST(request: Request) {
           },
         }
       );
+    }
+
+    try {
+      body = (await request.json()) as ChatCompletionRequest;
+    } catch {
+      await safeRecordErrorUsage({
+        userId: apiKeyRow.user_id,
+        apiKeyId: apiKeyRow.id,
+        apiKeyPrefix: apiKeyRow.key_prefix,
+        model,
+        status: "blocked",
+        httpStatus: 400,
+        errorCode: "invalid_json",
+        errorMessage: "Invalid JSON request body",
+        context,
+      });
+
+      return errorResponse("Invalid JSON request body", 400, undefined, context.requestId);
+    }
+
+    model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : defaultModel;
+
+    const requestLimitError = validateRequestLimits(body);
+
+    if (requestLimitError) {
+      await safeRecordErrorUsage({
+        userId: apiKeyRow.user_id,
+        apiKeyId: apiKeyRow.id,
+        apiKeyPrefix: apiKeyRow.key_prefix,
+        model,
+        status: "blocked",
+        httpStatus: 400,
+        errorCode: requestLimitError.code,
+        errorMessage: requestLimitError.message,
+        context,
+      });
+
+      return errorResponse(requestLimitError.message, 400, undefined, context.requestId);
     }
 
     const { data: profileData, error: profileError } = await supabase
@@ -347,7 +529,19 @@ export async function POST(request: Request) {
     balance = Number(profile?.balance ?? 0);
 
     if (!profile || balance <= 0) {
-      return errorResponse("Insufficient balance", 402);
+      await safeRecordErrorUsage({
+        userId: apiKeyRow.user_id,
+        apiKeyId: apiKeyRow.id,
+        apiKeyPrefix: apiKeyRow.key_prefix,
+        model,
+        status: "blocked",
+        httpStatus: 402,
+        errorCode: "insufficient_balance",
+        errorMessage: "Insufficient balance",
+        context,
+      });
+
+      return errorResponse("Insufficient balance", 402, undefined, context.requestId);
     }
 
     const { data: modelData, error: modelError } = await supabase
@@ -362,7 +556,19 @@ export async function POST(request: Request) {
     }
 
     if (!modelData) {
-      return errorResponse("model not supported or disabled", 400);
+      await safeRecordErrorUsage({
+        userId: apiKeyRow.user_id,
+        apiKeyId: apiKeyRow.id,
+        apiKeyPrefix: apiKeyRow.key_prefix,
+        model,
+        status: "blocked",
+        httpStatus: 400,
+        errorCode: "model_not_available",
+        errorMessage: "model not supported or disabled",
+        context,
+      });
+
+      return errorResponse("model not supported or disabled", 400, undefined, context.requestId);
     }
 
     modelPricing = modelData as ModelPricingRow;
@@ -378,35 +584,105 @@ export async function POST(request: Request) {
     }
 
     if (!supplierData) {
-      return errorResponse(`Supplier ${modelPricing.supplier_name} is not configured`, 400);
+      await safeRecordErrorUsage({
+        userId: apiKeyRow.user_id,
+        apiKeyId: apiKeyRow.id,
+        apiKeyPrefix: apiKeyRow.key_prefix,
+        model: modelPricing.name,
+        supplierName: modelPricing.supplier_name,
+        status: "blocked",
+        httpStatus: 400,
+        errorCode: "supplier_not_configured",
+        errorMessage: `Supplier ${modelPricing.supplier_name} is not configured`,
+        context,
+      });
+
+      return errorResponse(`Supplier ${modelPricing.supplier_name} is not configured`, 400, undefined, context.requestId);
     }
 
     supplier = supplierData as SupplierRow;
 
     if (!supplier.enabled) {
-      return errorResponse(`Supplier ${supplier.name} is disabled. Please contact the administrator.`, 400);
+      await safeRecordErrorUsage({
+        userId: apiKeyRow.user_id,
+        apiKeyId: apiKeyRow.id,
+        apiKeyPrefix: apiKeyRow.key_prefix,
+        model: modelPricing.name,
+        supplierName: supplier.name,
+        status: "blocked",
+        httpStatus: 400,
+        errorCode: "supplier_disabled",
+        errorMessage: `Supplier ${supplier.name} is disabled. Please contact the administrator.`,
+        context,
+      });
+
+      return errorResponse(
+        `Supplier ${supplier.name} is disabled. Please contact the administrator.`,
+        400,
+        undefined,
+        context.requestId
+      );
     }
 
     if (supplier.provider_type.trim().toLowerCase() !== "openai-compatible") {
-      return errorResponse(`Supplier ${supplier.name} provider_type is not supported`, 400);
+      await safeRecordErrorUsage({
+        userId: apiKeyRow.user_id,
+        apiKeyId: apiKeyRow.id,
+        apiKeyPrefix: apiKeyRow.key_prefix,
+        model: modelPricing.name,
+        supplierName: supplier.name,
+        status: "blocked",
+        httpStatus: 400,
+        errorCode: "supplier_provider_unsupported",
+        errorMessage: `Supplier ${supplier.name} provider_type is not supported`,
+        context,
+      });
+
+      return errorResponse(`Supplier ${supplier.name} provider_type is not supported`, 400, undefined, context.requestId);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Authentication failed";
-    return errorResponse(message, 500);
+    await safeRecordErrorUsage({
+      userId: apiKeyRow?.user_id,
+      apiKeyId: apiKeyRow?.id,
+      apiKeyPrefix: apiKeyRow?.key_prefix ?? suppliedKeyPrefix,
+      model,
+      supplierName: supplier?.name ?? modelPricing?.supplier_name,
+      status: "failed",
+      httpStatus: 500,
+      errorCode: "internal_error",
+      errorMessage: message,
+      context,
+    });
+
+    return errorResponse(message, 500, undefined, context.requestId);
   }
 
   if (!modelPricing) {
-    return errorResponse("model not supported or disabled", 400);
+    return errorResponse("model not supported or disabled", 400, undefined, context.requestId);
   }
 
   if (!supplier) {
-    return errorResponse(`Supplier ${modelPricing.supplier_name} is not configured`, 400);
+    return errorResponse(`Supplier ${modelPricing.supplier_name} is not configured`, 400, undefined, context.requestId);
   }
 
   const upstreamApiKey = supplier.api_key_encrypted?.trim() || fallbackUpstreamApiKey;
 
   if (!upstreamApiKey) {
-    return errorResponse(`Supplier ${supplier.name} API key is not configured`, 500);
+    await safeRecordErrorUsage({
+      userId: apiKeyRow?.user_id,
+      apiKeyId: apiKeyRow?.id,
+      apiKeyPrefix: apiKeyRow?.key_prefix ?? suppliedKeyPrefix,
+      model: modelPricing.name,
+      supplierName: supplier.name,
+      status: "failed",
+      httpStatus: 500,
+      errorCode: "supplier_api_key_missing",
+      errorMessage: `Supplier ${supplier.name} API key is not configured`,
+      context,
+    });
+
+    return errorResponse(`Supplier ${supplier.name} API key is not configured`, 500, undefined, context.requestId);
   }
 
   const upstreamPayload = {
@@ -417,6 +693,8 @@ export async function POST(request: Request) {
 
   let upstreamJson: UpstreamResponse;
   let upstreamStatus: number;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
   try {
     const upstreamResponse = await fetch(`${normalizeBaseUrl(supplier.base_url)}/chat/completions`, {
@@ -426,6 +704,7 @@ export async function POST(request: Request) {
         Authorization: `Bearer ${upstreamApiKey}`,
       },
       body: JSON.stringify(upstreamPayload),
+      signal: controller.signal,
     });
 
     upstreamStatus = upstreamResponse.status;
@@ -442,19 +721,50 @@ export async function POST(request: Request) {
     }
 
     if (!upstreamResponse.ok) {
-      await safeRecordFailedUsage(apiKeyRow.user_id, modelPricing.name, supplier.name, balance);
+      await safeRecordErrorUsage({
+        userId: apiKeyRow?.user_id,
+        apiKeyId: apiKeyRow?.id,
+        apiKeyPrefix: apiKeyRow?.key_prefix ?? suppliedKeyPrefix,
+        model: modelPricing.name,
+        supplierName: supplier.name,
+        status: "failed",
+        httpStatus: upstreamStatus >= 400 ? upstreamStatus : 502,
+        errorCode: "upstream_error",
+        errorMessage: upstreamJson.error?.message ?? upstreamJson,
+        context,
+      });
 
       return errorResponse(
         "Upstream request failed",
         upstreamStatus >= 400 ? upstreamStatus : 502,
-        upstreamJson.error?.message ?? upstreamJson
+        upstreamJson.error?.message ?? upstreamJson,
+        context.requestId
       );
     }
   } catch (error) {
-    await safeRecordFailedUsage(apiKeyRow.user_id, modelPricing.name, supplier.name, balance);
+    const isTimeout = error instanceof Error && error.name === "AbortError";
+    const message = isTimeout
+      ? `Upstream request timed out after ${UPSTREAM_TIMEOUT_MS / 1000}s`
+      : error instanceof Error
+        ? error.message
+        : "Upstream request failed";
 
-    const message = error instanceof Error ? error.message : "Upstream request failed";
-    return errorResponse("Upstream request failed", 502, message);
+    await safeRecordErrorUsage({
+      userId: apiKeyRow?.user_id,
+      apiKeyId: apiKeyRow?.id,
+      apiKeyPrefix: apiKeyRow?.key_prefix ?? suppliedKeyPrefix,
+      model: modelPricing.name,
+      supplierName: supplier.name,
+      status: "failed",
+      httpStatus: isTimeout ? 504 : 502,
+      errorCode: isTimeout ? "upstream_timeout" : "upstream_error",
+      errorMessage: message,
+      context,
+    });
+
+    return errorResponse("Upstream request failed", isTimeout ? 504 : 502, message, context.requestId);
+  } finally {
+    clearTimeout(timeout);
   }
 
   const usage = upstreamJson.usage;
@@ -475,22 +785,29 @@ export async function POST(request: Request) {
       : 0;
 
   try {
-    await recordUsage({
-      userId: apiKeyRow.user_id,
+    await recordUsageEvent({
+      userId: apiKeyRow?.user_id,
+      apiKeyId: apiKeyRow?.id,
+      apiKeyPrefix: apiKeyRow?.key_prefix ?? suppliedKeyPrefix,
       model: modelPricing.name,
       supplierName: supplier.name,
       promptTokens: safePromptTokens,
       completionTokens: safeCompletionTokens,
       cost,
       status: "success",
+      httpStatus: upstreamStatus,
       balance,
+      context,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Usage recording failed";
-    return errorResponse(message, 500);
+    return errorResponse(message, 500, undefined, context.requestId);
   }
 
   return jsonResponse(upstreamJson, {
     status: upstreamStatus,
+    headers: {
+      "X-Request-Id": context.requestId,
+    },
   });
 }

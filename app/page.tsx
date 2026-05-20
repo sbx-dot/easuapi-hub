@@ -212,6 +212,8 @@ type AdminUserSort = "balance_desc" | "balance_asc" | "last_usage_desc" | "last_
 type AdminUserDetailView = "apiKeys" | "usage" | "orders";
 type BalanceAdjustMode = "increase" | "decrease";
 type FinanceRange = "today" | "7d" | "30d" | "all";
+type ErrorRange = "today" | "7d" | "30d" | "all";
+type ErrorStatusFilter = "all" | "failed" | "blocked" | "rate_limited";
 
 type AdminUserRow = {
   user_id: string;
@@ -308,6 +310,54 @@ type RecentFinanceOrderRow = {
   status: string | null;
   note: string | null;
   created_at: string;
+};
+
+type ErrorSummaryRow = {
+  today_error_count: number | string | null;
+  today_401_count: number | string | null;
+  today_402_count: number | string | null;
+  today_429_count: number | string | null;
+  today_upstream_failed_count: number | string | null;
+  today_failure_rate: number | string | null;
+  last_hour_error_count: number | string | null;
+  top_error_user_email: string | null;
+  top_error_user_count: number | string | null;
+  top_error_model: string | null;
+  top_error_model_count: number | string | null;
+  top_error_supplier: string | null;
+  top_error_supplier_count: number | string | null;
+  high_frequency_key_prefix: string | null;
+  high_frequency_key_count: number | string | null;
+  frequent_402_email: string | null;
+  frequent_402_count: number | string | null;
+  failing_supplier_name: string | null;
+  failing_supplier_rate: number | string | null;
+  invalid_key_count: number | string | null;
+};
+
+type ErrorLogRow = {
+  id: string;
+  created_at: string;
+  user_id: string | null;
+  email: string | null;
+  api_key_id: string | null;
+  api_key_prefix: string | null;
+  api_key_revoked: boolean | null;
+  model: string | null;
+  model_display_name: string | null;
+  supplier_name: string | null;
+  supplier_display_name: string | null;
+  http_status: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  latency_ms: number | null;
+  cost: number | string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  status: string | null;
+  request_id: string | null;
+  ip_hash: string | null;
+  user_agent_hash: string | null;
 };
 
 const API_KEY_PREFIX_LENGTH = 16;
@@ -493,6 +543,29 @@ function formatPercent(value: number | string | null | undefined) {
   const normalized = Number.isFinite(amount) ? amount : 0;
 
   return `${normalized.toFixed(2)}%`;
+}
+
+function formatLatency(value: number | string | null | undefined) {
+  const amount = Number(value ?? 0);
+  const normalized = Number.isFinite(amount) ? amount : 0;
+
+  return normalized > 0 ? `${Math.round(normalized)} ms` : "无";
+}
+
+function formatShortHash(value: string | null | undefined) {
+  return value ? `${value.slice(0, 12)}...` : "无";
+}
+
+function getErrorStatusClass(status: string | null | undefined) {
+  if (status === "rate_limited") {
+    return "border-amber-300/30 bg-amber-300/10 text-amber-100";
+  }
+
+  if (status === "blocked") {
+    return "border-red-300/30 bg-red-400/10 text-red-100";
+  }
+
+  return "border-rose-300/30 bg-rose-400/10 text-rose-100";
 }
 
 function mapModel(row: ModelRow): ModelItem {
@@ -708,6 +781,18 @@ export default function EasyApiHubPage() {
   const [recentFinanceOrders, setRecentFinanceOrders] = useState<RecentFinanceOrderRow[]>([]);
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeMessage, setFinanceMessage] = useState("");
+  const [errorRange, setErrorRange] = useState<ErrorRange>("today");
+  const [errorEmailSearch, setErrorEmailSearch] = useState("");
+  const [errorStatusFilter, setErrorStatusFilter] = useState<ErrorStatusFilter>("all");
+  const [errorHttpStatusFilter, setErrorHttpStatusFilter] = useState("all");
+  const [errorModelFilter, setErrorModelFilter] = useState("all");
+  const [errorSupplierFilter, setErrorSupplierFilter] = useState("all");
+  const [errorSummary, setErrorSummary] = useState<ErrorSummaryRow | null>(null);
+  const [errorLogs, setErrorLogs] = useState<ErrorLogRow[]>([]);
+  const [errorLoading, setErrorLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [selectedErrorLog, setSelectedErrorLog] = useState<ErrorLogRow | null>(null);
+  const [disablingApiKeyId, setDisablingApiKeyId] = useState("");
   const [modelsMessage, setModelsMessage] = useState("");
   const [modelForm, setModelForm] = useState<ModelFormState>(emptyModelForm);
   const [editModelForm, setEditModelForm] = useState<ModelFormState>(emptyModelForm);
@@ -762,6 +847,49 @@ export default function EasyApiHubPage() {
       financeSummary?.cost_configured ? `成本 ${formatMoney(financeSummary?.estimated_upstream_cost, 4)}` : "models 成本字段为 0",
     ],
   ];
+  const errorRangeLabel =
+    errorRange === "today" ? "今天" : errorRange === "7d" ? "7 天" : errorRange === "30d" ? "30 天" : "全部";
+  const errorHttpStatusValue = errorHttpStatusFilter === "all" ? null : Number(errorHttpStatusFilter);
+  const errorStatCards = [
+    ["今日异常请求数", formatNumber(errorSummary?.today_error_count), "blocked / failed / rate_limited"],
+    ["今日 401 数", formatNumber(errorSummary?.today_401_count), "无效或缺少 API Key"],
+    ["今日 402 数", formatNumber(errorSummary?.today_402_count), "余额不足"],
+    ["今日 429 数", formatNumber(errorSummary?.today_429_count), "限流触发"],
+    ["今日上游失败数", formatNumber(errorSummary?.today_upstream_failed_count), "upstream_error / timeout"],
+    ["今日失败率", formatPercent(errorSummary?.today_failure_rate), "异常 / 全部请求"],
+    ["最近 1 小时异常数", formatNumber(errorSummary?.last_hour_error_count), "rolling 1h"],
+    [
+      "异常最多用户",
+      errorSummary?.top_error_user_email ?? "暂无",
+      `${formatNumber(errorSummary?.top_error_user_count)} 次`,
+    ],
+    [
+      "异常最多模型",
+      errorSummary?.top_error_model ?? "暂无",
+      `${formatNumber(errorSummary?.top_error_model_count)} 次`,
+    ],
+    [
+      "异常最多供应商",
+      errorSummary?.top_error_supplier ?? "暂无",
+      `${formatNumber(errorSummary?.top_error_supplier_count)} 次`,
+    ],
+  ];
+  const errorRiskHints = [
+    Number(errorSummary?.high_frequency_key_count ?? 0) > 0
+      ? `API Key ${errorSummary?.high_frequency_key_prefix ?? "unknown"} 1 分钟内多次触发 429，疑似高频调用。`
+      : "",
+    Number(errorSummary?.frequent_402_count ?? 0) > 0
+      ? `${errorSummary?.frequent_402_email ?? "某用户"} 最近 1 小时多次余额不足，建议提醒充值或检查自动重试。`
+      : "",
+    Number(errorSummary?.failing_supplier_rate ?? 0) >= 50
+      ? `${errorSummary?.failing_supplier_name ?? "某供应商"} 今日失败率 ${formatPercent(
+          errorSummary?.failing_supplier_rate
+        )}，供应商线路可能异常。`
+      : "",
+    Number(errorSummary?.invalid_key_count ?? 0) >= 5
+      ? `今日 401 较多，可能存在无效 Key 探测或客户端密钥配置错误。`
+      : "",
+  ].filter(Boolean);
 
   const pythonCode = useMemo(() => {
     return `from openai import OpenAI
@@ -835,6 +963,18 @@ print(completion.choices[0].message.content)`;
     setRecentFinanceOrders([]);
     setFinanceLoading(false);
     setFinanceMessage("");
+    setErrorRange("today");
+    setErrorEmailSearch("");
+    setErrorStatusFilter("all");
+    setErrorHttpStatusFilter("all");
+    setErrorModelFilter("all");
+    setErrorSupplierFilter("all");
+    setErrorSummary(null);
+    setErrorLogs([]);
+    setErrorLoading(false);
+    setErrorMessage("");
+    setSelectedErrorLog(null);
+    setDisablingApiKeyId("");
     setModelForm(emptyModelForm);
     setEditModelForm(emptyModelForm);
     setEditingModelId("");
@@ -995,6 +1135,57 @@ print(completion.choices[0].message.content)`;
     }
   }, [financeRange]);
 
+  const loadAdminErrors = useCallback(async () => {
+    if (!supabase) {
+      setErrorSummary(null);
+      setErrorLogs([]);
+      return;
+    }
+
+    setErrorLoading(true);
+    setErrorMessage("");
+
+    try {
+      const [summaryResult, logsResult] = await Promise.all([
+        supabase.rpc("get_error_summary_admin"),
+        supabase.rpc("list_error_logs_admin", {
+          search_email: errorEmailSearch.trim() || null,
+          status_filter: errorStatusFilter,
+          http_status_filter: Number.isFinite(errorHttpStatusValue) ? errorHttpStatusValue : null,
+          model_filter: errorModelFilter,
+          supplier_filter: errorSupplierFilter,
+          range_filter: errorRange,
+          limit_count: 100,
+        }),
+      ]);
+
+      const firstError = summaryResult.error ?? logsResult.error;
+
+      if (firstError) {
+        throw firstError;
+      }
+
+      const summaryData = Array.isArray(summaryResult.data)
+        ? (summaryResult.data[0] as ErrorSummaryRow | undefined)
+        : (summaryResult.data as ErrorSummaryRow | null);
+
+      setErrorSummary(summaryData ?? null);
+      setErrorLogs((logsResult.data ?? []) as ErrorLogRow[]);
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("异常请求读取失败，请确认最新 error monitoring RPC 和 usage_logs 字段已在 Supabase SQL Editor 执行。");
+    } finally {
+      setErrorLoading(false);
+    }
+  }, [
+    errorEmailSearch,
+    errorHttpStatusValue,
+    errorModelFilter,
+    errorRange,
+    errorStatusFilter,
+    errorSupplierFilter,
+  ]);
+
   const loadDashboardData = useCallback(async (nextSession: Session) => {
     if (!supabase) {
       resetDashboardData();
@@ -1104,6 +1295,20 @@ print(completion.choices[0].message.content)`;
 
     return () => window.clearTimeout(timer);
   }, [isAdmin, loadAdminFinance]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (isAdmin) {
+        void loadAdminErrors();
+      } else {
+        setErrorSummary(null);
+        setErrorLogs([]);
+        setSelectedErrorLog(null);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [isAdmin, loadAdminErrors]);
 
   useEffect(() => {
     if (!supabase) {
@@ -1576,6 +1781,65 @@ print(completion.choices[0].message.content)`;
       setAdminUsersMessage(`用户详情读取失败：${getErrorMessage(error)}`);
     } finally {
       setAdminUserDetailLoading(false);
+    }
+  };
+
+  const jumpToAdminSection = (id: string) => {
+    setPage("dashboard");
+    setDashboardTab("admin");
+    setDashboardScrollTarget(id);
+  };
+
+  const viewErrorUser = (log: ErrorLogRow) => {
+    if (!log.email) {
+      setErrorMessage("这条异常无法关联到具体用户，通常是缺失或无效 API Key。");
+      return;
+    }
+
+    setUserSearch(log.email);
+    setErrorMessage(`已将用户管理搜索条件设置为 ${log.email}。`);
+    jumpToAdminSection("users");
+  };
+
+  const viewErrorApiKeyRecords = (log: ErrorLogRow) => {
+    setSelectedErrorLog(log);
+    setErrorMessage(
+      log.api_key_prefix
+        ? `已展开 API Key ${log.api_key_prefix} 的异常详情。完整 Key 不会显示。`
+        : "这条异常没有可关联的 API Key 前缀。"
+    );
+  };
+
+  const disableErrorApiKey = async (log: ErrorLogRow) => {
+    if (!supabase || !session || !isAdmin) {
+      setErrorMessage("只有管理员可以禁用 API Key。");
+      return;
+    }
+
+    if (!log.api_key_id) {
+      setErrorMessage("这条异常没有可禁用的 API Key，可能是缺失或无效 Key 请求。");
+      return;
+    }
+
+    setDisablingApiKeyId(log.api_key_id);
+    setErrorMessage("");
+
+    try {
+      const { error } = await supabase.rpc("disable_api_key_admin", {
+        target_api_key_id: log.api_key_id,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setErrorMessage(`API Key ${log.api_key_prefix ?? log.api_key_id} 已禁用。`);
+      await Promise.all([loadAdminErrors(), loadAdminUsers()]);
+    } catch (error) {
+      console.error(error);
+      setErrorMessage(`API Key 禁用失败：${getErrorMessage(error)}`);
+    } finally {
+      setDisablingApiKeyId("");
     }
   };
 
@@ -3146,6 +3410,293 @@ print(completion.choices[0].message.content)`;
                   </div>
                 </CardContent>
               </Card>
+              <Card id="errors" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-xl font-bold">异常请求 / 风控监控</h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-400">
+                        聚合失败请求、限流、余额不足、供应商错误和无效 API Key。只记录错误元数据、哈希和 Key 前缀，不保存 prompt、完整 IP 或完整 API Key。
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={() => void loadAdminErrors()}
+                      disabled={errorLoading}
+                      variant="outline"
+                      className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {errorLoading ? "刷新中..." : "刷新异常"}
+                    </Button>
+                  </div>
+
+                  {errorMessage ? (
+                    <div className="mb-5 rounded-2xl border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                      {errorMessage}
+                    </div>
+                  ) : null}
+
+                  {errorLoading && errorLogs.length === 0 ? (
+                    <div className="mb-5 rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-300">
+                      正在读取异常请求...
+                    </div>
+                  ) : null}
+
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                    {errorStatCards.map(([label, value, hint]) => (
+                      <div
+                        key={label}
+                        className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 shadow-[0_0_18px_rgba(34,211,238,0.06)]"
+                      >
+                        <p className="text-sm text-slate-400">{label}</p>
+                        <p className="mt-2 break-words text-2xl font-black text-cyan-200">{value}</p>
+                        <p className="mt-2 text-xs text-slate-500">{hint}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h4 className="text-lg font-bold">风控建议</h4>
+                        <p className="mt-1 text-sm text-slate-400">当前列表范围：{errorRangeLabel}</p>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      {(errorRiskHints.length > 0 ? errorRiskHints : ["暂无明显风险信号。"]).map((hint) => (
+                        <div
+                          key={hint}
+                          className="rounded-xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-50"
+                        >
+                          {hint}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 lg:grid-cols-6">
+                    <div className="lg:col-span-2">
+                      <label className="text-sm text-slate-300">按邮箱搜索</label>
+                      <input
+                        value={errorEmailSearch}
+                        onChange={(event) => setErrorEmailSearch(event.target.value)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="user@example.com"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">状态</label>
+                      <select
+                        value={errorStatusFilter}
+                        onChange={(event) => setErrorStatusFilter(event.target.value as ErrorStatusFilter)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="all">全部</option>
+                        <option value="failed">failed</option>
+                        <option value="blocked">blocked</option>
+                        <option value="rate_limited">rate_limited</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">HTTP</label>
+                      <select
+                        value={errorHttpStatusFilter}
+                        onChange={(event) => setErrorHttpStatusFilter(event.target.value)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="all">全部</option>
+                        <option value="400">400</option>
+                        <option value="401">401</option>
+                        <option value="402">402</option>
+                        <option value="429">429</option>
+                        <option value="500">500+</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">时间范围</label>
+                      <select
+                        value={errorRange}
+                        onChange={(event) => setErrorRange(event.target.value as ErrorRange)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="today">今天</option>
+                        <option value="7d">7 天</option>
+                        <option value="30d">30 天</option>
+                        <option value="all">全部</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">模型</label>
+                      <select
+                        value={errorModelFilter}
+                        onChange={(event) => setErrorModelFilter(event.target.value)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="all">全部</option>
+                        {adminModels.map((model) => (
+                          <option key={model.name} value={model.name}>
+                            {model.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">供应商</label>
+                      <select
+                        value={errorSupplierFilter}
+                        onChange={(event) => setErrorSupplierFilter(event.target.value)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="all">全部</option>
+                        {adminSuppliers.map((supplier) => (
+                          <option key={supplier.name} value={supplier.name}>
+                            {supplier.displayName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {selectedErrorLog ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm text-cyan-50">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <h4 className="text-base font-bold">异常详情</h4>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedErrorLog(null)}
+                          className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-200 hover:bg-white/10"
+                        >
+                          关闭
+                        </button>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <div>Request ID：{selectedErrorLog.request_id ?? "无"}</div>
+                        <div>API Key：{selectedErrorLog.api_key_prefix ?? "无"}</div>
+                        <div>IP Hash：{formatShortHash(selectedErrorLog.ip_hash)}</div>
+                        <div>UA Hash：{formatShortHash(selectedErrorLog.user_agent_hash)}</div>
+                        <div className="md:col-span-2 xl:col-span-4">
+                          错误信息：{selectedErrorLog.error_message ?? "无"}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="mt-5 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                    <table className="w-full min-w-[1280px] text-left text-sm">
+                      <thead className="text-slate-400">
+                        <tr className="border-b border-white/10">
+                          <th className="py-3">时间</th>
+                          <th className="py-3">用户邮箱</th>
+                          <th className="py-3">API Key</th>
+                          <th className="py-3">model</th>
+                          <th className="py-3">supplier</th>
+                          <th className="py-3">HTTP</th>
+                          <th className="py-3">error_code</th>
+                          <th className="py-3">error_message</th>
+                          <th className="py-3">latency</th>
+                          <th className="py-3">cost</th>
+                          <th className="py-3">tokens</th>
+                          <th className="py-3">状态</th>
+                          <th className="py-3">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {errorLogs.map((log) => (
+                          <tr key={log.id} className="border-b border-white/5 align-top">
+                            <td className="py-3 pr-3 text-slate-300">{formatDateTime(log.created_at)}</td>
+                            <td className="py-3 pr-3 font-mono text-cyan-300">{log.email ?? "未关联"}</td>
+                            <td className="py-3 pr-3 font-mono text-xs text-slate-300">
+                              {log.api_key_prefix ?? "无"}
+                              {log.api_key_revoked ? <span className="ml-2 text-amber-300">已禁用</span> : null}
+                            </td>
+                            <td className="py-3 pr-3 font-mono text-slate-300">
+                              {log.model_display_name ?? log.model ?? "unknown"}
+                            </td>
+                            <td className="py-3 pr-3 font-mono text-slate-300">
+                              {log.supplier_display_name ?? log.supplier_name ?? "unknown"}
+                            </td>
+                            <td className="py-3 pr-3 text-amber-200">{log.http_status ?? "无"}</td>
+                            <td className="py-3 pr-3 font-mono text-xs text-rose-200">{log.error_code ?? "unknown"}</td>
+                            <td className="max-w-[280px] py-3 pr-3 text-slate-300">{log.error_message ?? "无"}</td>
+                            <td className="py-3 pr-3 text-slate-300">{formatLatency(log.latency_ms)}</td>
+                            <td className="py-3 pr-3 text-slate-300">{formatMoney(log.cost, 6)}</td>
+                            <td className="py-3 pr-3 text-slate-300">
+                              {formatNumber(Number(log.prompt_tokens ?? 0) + Number(log.completion_tokens ?? 0))}
+                            </td>
+                            <td className="py-3 pr-3">
+                              <span
+                                className={`rounded-full border px-2 py-1 text-xs ${getErrorStatusClass(log.status)}`}
+                              >
+                                {log.status ?? "failed"}
+                              </span>
+                            </td>
+                            <td className="py-3 pr-3">
+                              <div className="flex min-w-[260px] flex-wrap gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setSelectedErrorLog(log)}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  详情
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => viewErrorUser(log)}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  查看用户
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => viewErrorApiKeyRecords(log)}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  Key 记录
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    if (log.supplier_name) {
+                                      setErrorSupplierFilter(log.supplier_name);
+                                    }
+                                    jumpToAdminSection("suppliers");
+                                  }}
+                                  className="hover:bg-white/10 hover:text-white"
+                                >
+                                  供应商
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={!log.api_key_id || log.api_key_revoked === true || disablingApiKeyId === log.api_key_id}
+                                  onClick={() => void disableErrorApiKey(log)}
+                                  className="text-rose-200 hover:bg-rose-400/10 hover:text-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {disablingApiKeyId === log.api_key_id ? "禁用中" : "禁用 Key"}
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {errorLogs.length === 0 ? (
+                      <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-slate-400">
+                        暂无异常请求。可以切换时间范围，或触发一次 401 / 402 / 429 / 上游失败后再刷新。
+                      </div>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
               <Card id="suppliers" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
@@ -3854,7 +4405,6 @@ print(completion.choices[0].message.content)`;
               </Card>
               <div className="grid gap-3 md:grid-cols-2">
                 {[
-                  ["errors", "异常请求", "后续聚合上游错误、限流、余额不足和失败请求。"],
                   ["monitoring", "系统监控", "后续展示 QPS、延迟、可用率和供应商健康状态。"],
                 ].map(([id, title, desc]) => (
                   <div

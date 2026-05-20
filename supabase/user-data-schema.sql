@@ -33,18 +33,57 @@ add column if not exists note text;
 
 create table if not exists public.usage_logs (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
+  user_id uuid references auth.users(id) on delete cascade,
+  api_key_id uuid references public.api_keys(id) on delete set null,
+  api_key_prefix text,
   model text not null,
   supplier_name text,
   prompt_tokens integer not null default 0,
   completion_tokens integer not null default 0,
   cost numeric not null default 0,
   status text not null default 'success',
+  error_code text,
+  error_message text,
+  http_status integer,
+  request_id text,
+  latency_ms integer,
+  ip_hash text,
+  user_agent_hash text,
   created_at timestamptz not null default now()
 );
 
 alter table public.usage_logs
+alter column user_id drop not null;
+
+alter table public.usage_logs
+add column if not exists api_key_id uuid references public.api_keys(id) on delete set null;
+
+alter table public.usage_logs
+add column if not exists api_key_prefix text;
+
+alter table public.usage_logs
 add column if not exists supplier_name text;
+
+alter table public.usage_logs
+add column if not exists error_code text;
+
+alter table public.usage_logs
+add column if not exists error_message text;
+
+alter table public.usage_logs
+add column if not exists http_status integer;
+
+alter table public.usage_logs
+add column if not exists request_id text;
+
+alter table public.usage_logs
+add column if not exists latency_ms integer;
+
+alter table public.usage_logs
+add column if not exists ip_hash text;
+
+alter table public.usage_logs
+add column if not exists user_agent_hash text;
 
 create table if not exists public.suppliers (
   id uuid primary key default gen_random_uuid(),
@@ -93,6 +132,10 @@ create unique index if not exists api_keys_key_hash_idx on public.api_keys(key_h
 create index if not exists orders_user_id_idx on public.orders(user_id);
 create index if not exists usage_logs_user_id_idx on public.usage_logs(user_id);
 create index if not exists usage_logs_supplier_name_idx on public.usage_logs(supplier_name);
+create index if not exists usage_logs_api_key_id_idx on public.usage_logs(api_key_id);
+create index if not exists usage_logs_status_http_status_idx on public.usage_logs(status, http_status);
+create index if not exists usage_logs_created_at_idx on public.usage_logs(created_at);
+create index if not exists usage_logs_error_code_idx on public.usage_logs(error_code);
 create index if not exists suppliers_enabled_priority_idx on public.suppliers(enabled, priority);
 create index if not exists models_enabled_sort_order_idx on public.models(enabled, sort_order);
 create index if not exists models_supplier_name_idx on public.models(supplier_name);
@@ -1078,6 +1121,345 @@ $$;
 
 revoke all on function public.get_recent_orders_admin() from public;
 grant execute on function public.get_recent_orders_admin() to authenticated;
+
+drop function if exists public.get_error_summary_admin();
+create or replace function public.get_error_summary_admin()
+returns table (
+  today_error_count bigint,
+  today_401_count bigint,
+  today_402_count bigint,
+  today_429_count bigint,
+  today_upstream_failed_count bigint,
+  today_failure_rate numeric,
+  last_hour_error_count bigint,
+  top_error_user_email text,
+  top_error_user_count bigint,
+  top_error_model text,
+  top_error_model_count bigint,
+  top_error_supplier text,
+  top_error_supplier_count bigint,
+  high_frequency_key_prefix text,
+  high_frequency_key_count bigint,
+  frequent_402_email text,
+  frequent_402_count bigint,
+  failing_supplier_name text,
+  failing_supplier_rate numeric,
+  invalid_key_count bigint
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  today_start timestamptz := date_trunc('day', now());
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read error summary';
+  end if;
+
+  return query
+  with today_logs as (
+    select *
+    from public.usage_logs
+    where created_at >= today_start
+  ),
+  today_error_logs as (
+    select *
+    from today_logs
+    where status in ('failed', 'blocked', 'rate_limited')
+       or coalesce(http_status, 200) >= 400
+       or error_code is not null
+  ),
+  last_hour_error_logs as (
+    select *
+    from public.usage_logs
+    where created_at >= now() - interval '1 hour'
+      and (
+        status in ('failed', 'blocked', 'rate_limited')
+        or coalesce(http_status, 200) >= 400
+        or error_code is not null
+      )
+  ),
+  top_user as (
+    select
+      profiles.email,
+      count(*)::bigint as error_count
+    from today_error_logs
+    left join public.profiles on profiles.id = today_error_logs.user_id
+    where profiles.email is not null
+    group by profiles.email
+    order by error_count desc, profiles.email asc
+    limit 1
+  ),
+  top_model as (
+    select
+      coalesce(models.display_name, today_error_logs.model, 'unknown') as model_name,
+      count(*)::bigint as error_count
+    from today_error_logs
+    left join public.models on models.name = today_error_logs.model
+    group by coalesce(models.display_name, today_error_logs.model, 'unknown')
+    order by error_count desc, model_name asc
+    limit 1
+  ),
+  top_supplier as (
+    select
+      coalesce(suppliers.display_name, today_error_logs.supplier_name, 'unknown') as supplier_name,
+      count(*)::bigint as error_count
+    from today_error_logs
+    left join public.suppliers on suppliers.name = today_error_logs.supplier_name
+    group by coalesce(suppliers.display_name, today_error_logs.supplier_name, 'unknown')
+    order by error_count desc, supplier_name asc
+    limit 1
+  ),
+  high_frequency_key as (
+    select
+      coalesce(api_key_prefix, 'unknown') as key_prefix,
+      count(*)::bigint as error_count
+    from public.usage_logs
+    where created_at >= now() - interval '1 minute'
+      and http_status = 429
+    group by api_key_id, api_key_prefix
+    having count(*) >= 3
+    order by error_count desc
+    limit 1
+  ),
+  frequent_402 as (
+    select
+      profiles.email,
+      count(*)::bigint as error_count
+    from public.usage_logs
+    left join public.profiles on profiles.id = usage_logs.user_id
+    where usage_logs.created_at >= now() - interval '1 hour'
+      and usage_logs.http_status = 402
+      and profiles.email is not null
+    group by profiles.email
+    having count(*) >= 3
+    order by error_count desc
+    limit 1
+  ),
+  supplier_health as (
+    select
+      coalesce(suppliers.display_name, usage_logs.supplier_name, 'unknown') as supplier_name,
+      count(*)::bigint as call_count,
+      count(*) filter (
+        where usage_logs.status in ('failed', 'blocked', 'rate_limited')
+           or coalesce(usage_logs.http_status, 200) >= 400
+           or usage_logs.error_code is not null
+      )::bigint as error_count
+    from public.usage_logs
+    left join public.suppliers on suppliers.name = usage_logs.supplier_name
+    where usage_logs.created_at >= today_start
+      and usage_logs.supplier_name is not null
+    group by coalesce(suppliers.display_name, usage_logs.supplier_name, 'unknown')
+    having count(*) >= 3
+    order by (count(*) filter (
+      where usage_logs.status in ('failed', 'blocked', 'rate_limited')
+         or coalesce(usage_logs.http_status, 200) >= 400
+         or usage_logs.error_code is not null
+    )::numeric / nullif(count(*)::numeric, 0)) desc
+    limit 1
+  )
+  select
+    (select count(*)::bigint from today_error_logs),
+    (select count(*)::bigint from today_error_logs where http_status = 401),
+    (select count(*)::bigint from today_error_logs where http_status = 402),
+    (select count(*)::bigint from today_error_logs where http_status = 429),
+    (select count(*)::bigint from today_error_logs where error_code in ('upstream_error', 'upstream_timeout')),
+    case
+      when (select count(*) from today_logs) > 0 then round(((select count(*) from today_error_logs)::numeric / (select count(*) from today_logs)::numeric) * 100, 2)
+      else 0
+    end,
+    (select count(*)::bigint from last_hour_error_logs),
+    top_user.email,
+    coalesce(top_user.error_count, 0),
+    top_model.model_name,
+    coalesce(top_model.error_count, 0),
+    top_supplier.supplier_name,
+    coalesce(top_supplier.error_count, 0),
+    high_frequency_key.key_prefix,
+    coalesce(high_frequency_key.error_count, 0),
+    frequent_402.email,
+    coalesce(frequent_402.error_count, 0),
+    supplier_health.supplier_name,
+    case
+      when supplier_health.call_count > 0 then round((supplier_health.error_count::numeric / supplier_health.call_count::numeric) * 100, 2)
+      else 0
+    end,
+    (select count(*)::bigint from today_error_logs where http_status = 401)
+  from (select 1) seed
+  left join top_user on true
+  left join top_model on true
+  left join top_supplier on true
+  left join high_frequency_key on true
+  left join frequent_402 on true
+  left join supplier_health on true;
+end;
+$$;
+
+revoke all on function public.get_error_summary_admin() from public;
+grant execute on function public.get_error_summary_admin() to authenticated;
+
+drop function if exists public.list_error_logs_admin(text, text, integer, text, text, text, integer);
+create or replace function public.list_error_logs_admin(
+  search_email text default null,
+  status_filter text default 'all',
+  http_status_filter integer default null,
+  model_filter text default 'all',
+  supplier_filter text default 'all',
+  range_filter text default 'today',
+  limit_count integer default 100
+)
+returns table (
+  id uuid,
+  created_at timestamptz,
+  user_id uuid,
+  email text,
+  api_key_id uuid,
+  api_key_prefix text,
+  api_key_revoked boolean,
+  model text,
+  model_display_name text,
+  supplier_name text,
+  supplier_display_name text,
+  http_status integer,
+  error_code text,
+  error_message text,
+  latency_ms integer,
+  cost numeric,
+  prompt_tokens integer,
+  completion_tokens integer,
+  status text,
+  request_id text,
+  ip_hash text,
+  user_agent_hash text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  range_start timestamptz;
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can read error logs';
+  end if;
+
+  range_start := case coalesce(range_filter, 'today')
+    when 'today' then date_trunc('day', now())
+    when '7d' then now() - interval '7 days'
+    when '30d' then now() - interval '30 days'
+    else null
+  end;
+
+  return query
+  select
+    usage_logs.id,
+    usage_logs.created_at,
+    usage_logs.user_id,
+    profiles.email,
+    usage_logs.api_key_id,
+    coalesce(usage_logs.api_key_prefix, api_keys.key_prefix),
+    api_keys.revoked,
+    usage_logs.model,
+    models.display_name,
+    usage_logs.supplier_name,
+    suppliers.display_name,
+    usage_logs.http_status,
+    usage_logs.error_code,
+    case
+      when usage_logs.error_message is null then null
+      when length(usage_logs.error_message) > 220 then left(usage_logs.error_message, 220) || '...'
+      else usage_logs.error_message
+    end,
+    usage_logs.latency_ms,
+    usage_logs.cost,
+    usage_logs.prompt_tokens,
+    usage_logs.completion_tokens,
+    usage_logs.status,
+    usage_logs.request_id,
+    usage_logs.ip_hash,
+    usage_logs.user_agent_hash
+  from public.usage_logs
+  left join public.profiles on profiles.id = usage_logs.user_id
+  left join public.api_keys on api_keys.id = usage_logs.api_key_id
+  left join public.models on models.name = usage_logs.model
+  left join public.suppliers on suppliers.name = usage_logs.supplier_name
+  where
+    (
+      usage_logs.status in ('failed', 'blocked', 'rate_limited')
+      or coalesce(usage_logs.http_status, 200) >= 400
+      or usage_logs.error_code is not null
+    )
+    and (range_start is null or usage_logs.created_at >= range_start)
+    and (nullif(btrim(search_email), '') is null or profiles.email ilike '%' || btrim(search_email) || '%')
+    and (coalesce(nullif(status_filter, ''), 'all') = 'all' or usage_logs.status = status_filter)
+    and (
+      http_status_filter is null
+      or (http_status_filter = 500 and coalesce(usage_logs.http_status, 0) >= 500)
+      or usage_logs.http_status = http_status_filter
+    )
+    and (coalesce(nullif(model_filter, ''), 'all') = 'all' or usage_logs.model = model_filter)
+    and (coalesce(nullif(supplier_filter, ''), 'all') = 'all' or usage_logs.supplier_name = supplier_filter)
+  order by usage_logs.created_at desc
+  limit greatest(1, least(coalesce(limit_count, 100), 200));
+end;
+$$;
+
+revoke all on function public.list_error_logs_admin(text, text, integer, text, text, text, integer) from public;
+grant execute on function public.list_error_logs_admin(text, text, integer, text, text, text, integer) to authenticated;
+
+drop function if exists public.disable_api_key_admin(uuid);
+create or replace function public.disable_api_key_admin(target_api_key_id uuid)
+returns table (
+  id uuid,
+  key_prefix text,
+  revoked boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  updated_key public.api_keys%rowtype;
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'Only admins can disable api keys';
+  end if;
+
+  update public.api_keys
+  set revoked = true
+  where api_keys.id = target_api_key_id
+  returning * into updated_key;
+
+  if updated_key.id is null then
+    raise exception 'API Key not found';
+  end if;
+
+  return query
+  select
+    updated_key.id,
+    updated_key.key_prefix,
+    updated_key.revoked;
+end;
+$$;
+
+revoke all on function public.disable_api_key_admin(uuid) from public;
+grant execute on function public.disable_api_key_admin(uuid) to authenticated;
 
 drop policy if exists "Users can read own profile" on public.profiles;
 create policy "Users can read own profile"
