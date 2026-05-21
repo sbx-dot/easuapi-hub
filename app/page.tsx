@@ -7,6 +7,7 @@ import type { Session } from "@supabase/supabase-js";
 import {
   Activity,
   ArrowRight,
+  Bot,
   BookOpen,
   Check,
   Copy,
@@ -19,8 +20,10 @@ import {
   KeyRound,
   LogOut,
   Menu,
+  MessageSquare,
   Play,
   Plus,
+  Send,
   Settings,
   ShieldCheck,
   Trash2,
@@ -39,12 +42,37 @@ type Tab =
   | "overview"
   | "keys"
   | "playground"
+  | "chat"
   | "models"
   | "usage"
   | "recharge"
   | "orders"
   | "docs"
   | "admin";
+
+type ChatModel = "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-pro";
+
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  model?: ChatModel;
+  createdAt: string;
+};
+
+type ChatCompletionResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+  error?: {
+    message?: string;
+    details?: unknown;
+    request_id?: string;
+  };
+  [key: string]: unknown;
+};
 
 type DashboardNavItem = {
   label: string;
@@ -361,6 +389,29 @@ type ErrorLogRow = {
 };
 
 const API_KEY_PREFIX_LENGTH = 16;
+const CHAT_API_KEY_STORAGE_KEY = "eelapi_chat_api_key";
+
+const chatModelOptions: Array<{
+  name: ChatModel;
+  label: string;
+  desc: string;
+}> = [
+  {
+    name: "deepseek-chat",
+    label: "DeepSeek Chat",
+    desc: "通用聊天、写作、代码与轻量分析。",
+  },
+  {
+    name: "deepseek-reasoner",
+    label: "DeepSeek Reasoner",
+    desc: "复杂推理、规划和多步骤问题。",
+  },
+  {
+    name: "deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
+    desc: "更高阶的综合能力模型。",
+  },
+];
 
 const emptyModelForm: ModelFormState = {
   name: "",
@@ -421,6 +472,7 @@ const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "overview", label: "概览", icon: <Gauge className="h-4 w-4" /> },
   { key: "keys", label: "API Key", icon: <KeyRound className="h-4 w-4" /> },
   { key: "playground", label: "在线测试", icon: <Play className="h-4 w-4" /> },
+  { key: "chat", label: "AI 聊天", icon: <MessageSquare className="h-4 w-4" /> },
   { key: "models", label: "模型列表", icon: <Database className="h-4 w-4" /> },
   { key: "usage", label: "用量记录", icon: <Activity className="h-4 w-4" /> },
   { key: "recharge", label: "充值中心", icon: <CreditCard className="h-4 w-4" /> },
@@ -433,6 +485,7 @@ const dashboardNavItems: DashboardNavItem[] = [
   { label: "概览", id: "overview", tab: "overview" },
   { label: "API Key", id: "api-keys", tab: "keys" },
   { label: "在线测试", id: "playground", tab: "playground" },
+  { label: "AI 聊天", id: "chat", tab: "chat" },
   { label: "模型列表", id: "models", tab: "models" },
   { label: "用量记录", id: "usage-logs", tab: "usage" },
   { label: "充值中心", id: "recharge", tab: "recharge" },
@@ -451,6 +504,7 @@ const activeSectionIdByTab: Record<Tab, string> = {
   overview: "overview",
   keys: "api-keys",
   playground: "playground",
+  chat: "chat",
   models: "models",
   usage: "usage-logs",
   recharge: "recharge",
@@ -677,6 +731,50 @@ function getErrorMessage(error: unknown) {
   return "未知错误";
 }
 
+function createChatMessageId() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatChatMessageTime() {
+  return new Date().toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function readChatAssistantReply(data: ChatCompletionResponse | null) {
+  const content = data?.choices?.[0]?.message?.content;
+
+  return typeof content === "string" ? content.trim() : "";
+}
+
+function stringifyChatErrorDetails(details: unknown) {
+  if (details === undefined || details === null) {
+    return "";
+  }
+
+  if (typeof details === "string") {
+    return details;
+  }
+
+  try {
+    return JSON.stringify(details);
+  } catch {
+    return String(details);
+  }
+}
+
+function readChatApiError(data: ChatCompletionResponse | null, fallback: string) {
+  const message = data?.error?.message;
+  const details = stringifyChatErrorDetails(data?.error?.details);
+
+  if (typeof message === "string" && message.trim()) {
+    return details ? `${message.trim()}：${details}` : message.trim();
+  }
+
+  return fallback || "请求失败，请稍后重试。";
+}
+
 function SectionTitle({
   label,
   title,
@@ -721,6 +819,7 @@ function BrandMark({ className = "" }: { className?: string }) {
 
 export default function EasyApiHubPage() {
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chatMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const [page, setPage] = useState<Page>("home");
   const [dashboardTab, setDashboardTab] = useState<Tab>("overview");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -751,6 +850,13 @@ export default function EasyApiHubPage() {
   const [testResult, setTestResult] = useState(
     "这里会显示模型回复。当前是本地演示版，不会真的请求上游 API。"
   );
+  const [chatApiKey, setChatApiKey] = useState("");
+  const [chatModel, setChatModel] = useState<ChatModel>("deepseek-chat");
+  const [chatInput, setChatInput] = useState("你好");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [chatRawResponse, setChatRawResponse] = useState("");
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
   const [usageLogs, setUsageLogs] = useState<UsageItem[]>([]);
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -813,6 +919,7 @@ export default function EasyApiHubPage() {
   const selectedModelInfo =
     modelList.find((model) => model.name === selectedModel) ?? modelList[0] ?? fallbackModelList[0];
   const selectedModelName = selectedModelInfo.name;
+  const chatModelInfo = chatModelOptions.find((model) => model.name === chatModel) ?? chatModelOptions[0];
   const apiBaseUrl = "https://eelapi.com/api/v1";
   const exampleModel = "deepseek-chat";
   const supplierOptions =
@@ -983,6 +1090,10 @@ print(completion.choices[0].message.content)`;
     setEditSupplierForm(emptySupplierForm);
     setEditingSupplierId("");
     setAdminSupplierMessage("");
+    setChatMessages([]);
+    setChatInput("你好");
+    setChatError("");
+    setChatRawResponse("");
   }, []);
 
   const loadEnabledModels = useCallback(async () => {
@@ -1259,6 +1370,28 @@ print(completion.choices[0].message.content)`;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      try {
+        const storedApiKey = window.localStorage.getItem(CHAT_API_KEY_STORAGE_KEY);
+
+        if (storedApiKey) {
+          setChatApiKey(storedApiKey);
+        }
+      } catch {
+        setChatError("无法读取浏览器 localStorage，API Key 只会保存在当前页面状态。");
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    chatMessagesEndRef.current?.scrollIntoView({
+      block: "end",
+    });
+  }, [chatLoading, chatMessages.length]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
       if (isAdmin) {
         void Promise.all([loadAdminModels(), loadAdminSuppliers()]);
       } else {
@@ -1385,6 +1518,20 @@ print(completion.choices[0].message.content)`;
       showCopyMessage(label);
     } catch {
       showCopyMessage("复制失败，请手动复制");
+    }
+  };
+
+  const updateChatApiKey = (value: string) => {
+    setChatApiKey(value);
+
+    try {
+      if (value.trim()) {
+        window.localStorage.setItem(CHAT_API_KEY_STORAGE_KEY, value);
+      } else {
+        window.localStorage.removeItem(CHAT_API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      setChatError("无法写入浏览器 localStorage，请检查浏览器隐私设置。");
     }
   };
 
@@ -1575,6 +1722,94 @@ print(completion.choices[0].message.content)`;
     setTestResult(
       `演示回复：你的请求已通过 ${selectedModelName} 处理。\n\n这是本地模拟结果，不会请求真实 AI API，也不会写入 usage_logs。\n\nTokens：${total}\n模拟费用：¥${cost.toFixed(4)}`
     );
+  };
+
+  const handleChatSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const userContent = chatInput.trim();
+    const userApiKey = chatApiKey.trim();
+
+    if (!userContent) {
+      setChatError("请输入要发送的内容。");
+      return;
+    }
+
+    if (!userApiKey) {
+      setChatError("请先填写你自己的 API Key。");
+      return;
+    }
+
+    const requestModel = chatModel;
+    const userMessage: ChatMessage = {
+      id: createChatMessageId(),
+      role: "user",
+      content: userContent,
+      model: requestModel,
+      createdAt: formatChatMessageTime(),
+    };
+    const nextMessages = [...chatMessages, userMessage];
+
+    setChatMessages(nextMessages);
+    setChatInput("");
+    setChatError("");
+    setChatRawResponse("");
+    setChatLoading(true);
+
+    try {
+      const response = await fetch("/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${userApiKey}`,
+        },
+        body: JSON.stringify({
+          model: requestModel,
+          messages: nextMessages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+        }),
+      });
+      const responseText = await response.text();
+      let responseData: ChatCompletionResponse | null = null;
+
+      if (responseText) {
+        try {
+          responseData = JSON.parse(responseText) as ChatCompletionResponse;
+        } catch {
+          responseData = null;
+        }
+      }
+
+      setChatRawResponse(responseData ? JSON.stringify(responseData, null, 2) : responseText);
+
+      if (!response.ok) {
+        throw new Error(readChatApiError(responseData, responseText || response.statusText));
+      }
+
+      const assistantReply =
+        readChatAssistantReply(responseData) || responseText || "接口返回成功，但没有可展示的 assistant 内容。";
+
+      setChatMessages((items) => [
+        ...items,
+        {
+          id: createChatMessageId(),
+          role: "assistant",
+          content: assistantReply,
+          model: requestModel,
+          createdAt: formatChatMessageTime(),
+        },
+      ]);
+
+      if (session) {
+        void loadDashboardData(session);
+      }
+    } catch (error) {
+      setChatError(getErrorMessage(error));
+    } finally {
+      setChatLoading(false);
+    }
   };
 
   const recharge = (amount: number) => {
@@ -2545,6 +2780,191 @@ print(completion.choices[0].message.content)`;
                   </pre>
                 </CardContent>
               </Card>
+            </div>
+          ) : null}
+
+          {activeDashboardTab === "chat" ? (
+            <div id="chat" className="scroll-mt-28">
+              <SectionTitle
+                label="AI Chat"
+                title="AI 聊天"
+                desc="使用你自己的 API Key 调用 OpenAI-compatible 聊天接口。"
+              />
+              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+                <Card className="rounded-3xl border-cyan-300/15 bg-white/[0.06] text-white shadow-[0_0_28px_rgba(34,211,238,0.08)]">
+                  <CardContent className="p-0">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-cyan-300/25 bg-cyan-300/10 text-cyan-200">
+                          <MessageSquare className="h-5 w-5" />
+                        </div>
+                        <div>
+                          <p className="font-semibold">/api/v1/chat/completions</p>
+                          <p className="text-xs text-slate-400">POST · Content-Type: application/json</p>
+                        </div>
+                      </div>
+                      <span className="rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1 text-xs font-semibold text-cyan-100">
+                        当前模型：{chatModel}
+                      </span>
+                    </div>
+
+                    <div className="max-h-[520px] min-h-[330px] overflow-y-auto p-5">
+                      {chatMessages.length === 0 ? (
+                        <div className="flex min-h-[280px] items-center justify-center rounded-3xl border border-dashed border-cyan-300/20 bg-slate-950/50 p-6 text-center">
+                          <div>
+                            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-cyan-300/25 bg-cyan-300/10 text-cyan-200">
+                              <Bot className="h-6 w-6" />
+                            </div>
+                            <p className="font-semibold text-slate-100">还没有聊天记录</p>
+                            <p className="mt-2 text-sm leading-6 text-slate-400">
+                              填入 API Key，选择模型，然后发送第一条消息。
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {chatMessages.map((message) => {
+                            const isUserMessage = message.role === "user";
+
+                            return (
+                              <div
+                                key={message.id}
+                                className={`flex ${isUserMessage ? "justify-end" : "justify-start"}`}
+                              >
+                                <div
+                                  className={`max-w-[86%] rounded-3xl border px-4 py-3 ${
+                                    isUserMessage
+                                      ? "border-cyan-300/30 bg-cyan-300/15 text-cyan-50"
+                                      : "border-white/10 bg-slate-950/70 text-slate-100"
+                                  }`}
+                                >
+                                  <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                                    {isUserMessage ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
+                                    <span>{isUserMessage ? "你" : "Assistant"}</span>
+                                    <span>{message.createdAt}</span>
+                                    {message.model ? (
+                                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] text-cyan-200">
+                                        {message.model}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <p className="whitespace-pre-wrap break-words text-sm leading-7">{message.content}</p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {chatLoading ? (
+                            <div className="flex justify-start">
+                              <div className="rounded-3xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
+                                <span className="mr-2 inline-flex h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
+                                正在等待模型回复...
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                      <div ref={chatMessagesEndRef} />
+                    </div>
+
+                    {chatError ? (
+                      <div className="mx-5 mb-4 rounded-2xl border border-rose-300/25 bg-rose-400/10 px-4 py-3 text-sm leading-6 text-rose-100">
+                        {chatError}
+                      </div>
+                    ) : null}
+
+                    <form onSubmit={handleChatSubmit} className="border-t border-white/10 p-5">
+                      <label className="text-sm text-slate-300">输入内容</label>
+                      <textarea
+                        value={chatInput}
+                        onChange={(event) => setChatInput(event.target.value)}
+                        disabled={chatLoading}
+                        className="mt-2 min-h-28 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300 disabled:cursor-not-allowed disabled:opacity-70"
+                        placeholder="请输入要发送给模型的消息"
+                      />
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                        <p className="text-xs leading-5 text-slate-400">
+                          请求会携带 Authorization: Bearer 你填写的 API Key。
+                        </p>
+                        <Button
+                          type="submit"
+                          disabled={chatLoading || !chatInput.trim() || !chatApiKey.trim()}
+                          className="rounded-2xl bg-white px-5 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <Send className="mr-2 h-4 w-4" />
+                          {chatLoading ? "发送中..." : "发送"}
+                        </Button>
+                      </div>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                <div className="space-y-5">
+                  <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                    <CardContent className="p-6">
+                      <h3 className="text-lg font-bold">调用设置</h3>
+                      <div className="mt-5">
+                        <label className="text-sm text-slate-300">API Key</label>
+                        <input
+                          type="password"
+                          value={chatApiKey}
+                          onChange={(event) => updateChatApiKey(event.target.value)}
+                          autoComplete="off"
+                          spellCheck={false}
+                          className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300"
+                          placeholder="sk_live_..."
+                        />
+                        <p className="mt-2 text-xs leading-5 text-slate-400">
+                          只保存在当前浏览器 localStorage，不会写入代码或提交到仓库。
+                        </p>
+                      </div>
+
+                      <div className="mt-5">
+                        <label className="text-sm text-slate-300">选择模型</label>
+                        <select
+                          value={chatModel}
+                          onChange={(event) => setChatModel(event.target.value as ChatModel)}
+                          className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-cyan-300"
+                        >
+                          {chatModelOptions.map((model) => (
+                            <option key={model.name} value={model.name}>
+                              {model.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4">
+                        <p className="font-mono text-sm text-cyan-100">{chatModelInfo.name}</p>
+                        <p className="mt-2 text-sm font-semibold text-white">{chatModelInfo.label}</p>
+                        <p className="mt-2 text-sm leading-6 text-slate-300">{chatModelInfo.desc}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                    <CardContent className="p-6">
+                      <div className="mb-4 flex items-center justify-between gap-3">
+                        <h3 className="text-lg font-bold">接口返回结果</h3>
+                        {chatRawResponse ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => copy(chatRawResponse, "已复制接口返回结果")}
+                            className="text-slate-300 hover:bg-white/10 hover:text-white"
+                          >
+                            <Copy className="mr-2 h-4 w-4" />
+                            复制
+                          </Button>
+                        ) : null}
+                      </div>
+                      <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap rounded-2xl border border-white/10 bg-slate-950/80 p-4 text-xs leading-6 text-slate-300">
+                        {chatRawResponse || "发送成功后，这里会显示原始 JSON 返回。"}
+                      </pre>
+                    </CardContent>
+                  </Card>
+                </div>
+              </div>
             </div>
           ) : null}
 
