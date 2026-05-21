@@ -50,13 +50,11 @@ type Tab =
   | "docs"
   | "admin";
 
-type ChatModel = "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-pro";
-
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  model?: ChatModel;
+  model?: string;
   createdAt: string;
 };
 
@@ -79,6 +77,20 @@ type DashboardNavItem = {
   id: string;
   tab: Tab;
   adminOnly?: boolean;
+};
+
+type ChatApiKeyItem = {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  createdAt: string;
+};
+
+type ChatApiKeyRow = {
+  id: string;
+  name: string | null;
+  key_prefix: string;
+  created_at: string;
 };
 
 type ApiKeyItem = {
@@ -389,29 +401,6 @@ type ErrorLogRow = {
 };
 
 const API_KEY_PREFIX_LENGTH = 16;
-const CHAT_API_KEY_STORAGE_KEY = "eelapi_chat_api_key";
-
-const chatModelOptions: Array<{
-  name: ChatModel;
-  label: string;
-  desc: string;
-}> = [
-  {
-    name: "deepseek-chat",
-    label: "DeepSeek Chat",
-    desc: "通用聊天、写作、代码与轻量分析。",
-  },
-  {
-    name: "deepseek-reasoner",
-    label: "DeepSeek Reasoner",
-    desc: "复杂推理、规划和多步骤问题。",
-  },
-  {
-    name: "deepseek-v4-pro",
-    label: "DeepSeek V4 Pro",
-    desc: "更高阶的综合能力模型。",
-  },
-];
 
 const emptyModelForm: ModelFormState = {
   name: "",
@@ -544,6 +533,15 @@ function mapApiKey(row: ApiKeyRow, oneTimeKey?: string): ApiKeyItem {
     name: row.name,
     keyPrefix: row.key_prefix,
     oneTimeKey,
+    createdAt: formatDateTime(row.created_at),
+  };
+}
+
+function mapChatApiKey(row: ChatApiKeyRow): ChatApiKeyItem {
+  return {
+    id: row.id,
+    name: row.name ?? "API Key",
+    keyPrefix: row.key_prefix,
     createdAt: formatDateTime(row.created_at),
   };
 }
@@ -850,13 +848,16 @@ export default function EasyApiHubPage() {
   const [testResult, setTestResult] = useState(
     "这里会显示模型回复。当前是本地演示版，不会真的请求上游 API。"
   );
-  const [chatApiKey, setChatApiKey] = useState("");
-  const [chatModel, setChatModel] = useState<ChatModel>("deepseek-chat");
+  const [chatModel, setChatModel] = useState("deepseek-chat");
   const [chatInput, setChatInput] = useState("你好");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState("");
   const [chatRawResponse, setChatRawResponse] = useState("");
+  const [chatApiKeys, setChatApiKeys] = useState<ChatApiKeyItem[]>([]);
+  const [selectedChatApiKeyId, setSelectedChatApiKeyId] = useState("");
+  const [chatKeysLoading, setChatKeysLoading] = useState(false);
+  const [chatKeysMessage, setChatKeysMessage] = useState("");
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
   const [usageLogs, setUsageLogs] = useState<UsageItem[]>([]);
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -919,7 +920,12 @@ export default function EasyApiHubPage() {
   const selectedModelInfo =
     modelList.find((model) => model.name === selectedModel) ?? modelList[0] ?? fallbackModelList[0];
   const selectedModelName = selectedModelInfo.name;
-  const chatModelInfo = chatModelOptions.find((model) => model.name === chatModel) ?? chatModelOptions[0];
+  const chatAvailableModels = useMemo(
+    () => (isSupabaseConfigured && !modelsMessage ? modelList : []),
+    [modelList, modelsMessage]
+  );
+  const chatModelInfo = chatAvailableModels.find((model) => model.name === chatModel) ?? chatAvailableModels[0] ?? null;
+  const activeChatApiKey = chatApiKeys.find((key) => key.id === selectedChatApiKeyId) ?? chatApiKeys[0] ?? null;
   const apiBaseUrl = "https://eelapi.com/api/v1";
   const exampleModel = "deepseek-chat";
   const supplierOptions =
@@ -1094,6 +1100,10 @@ print(completion.choices[0].message.content)`;
     setChatInput("你好");
     setChatError("");
     setChatRawResponse("");
+    setChatApiKeys([]);
+    setSelectedChatApiKeyId("");
+    setChatKeysLoading(false);
+    setChatKeysMessage("");
   }, []);
 
   const loadEnabledModels = useCallback(async () => {
@@ -1360,6 +1370,52 @@ print(completion.choices[0].message.content)`;
     }
   }, [resetDashboardData]);
 
+  const loadChatApiKeys = useCallback(async (nextSession?: Session | null) => {
+    const activeSession = nextSession ?? session;
+
+    if (!activeSession) {
+      setChatApiKeys([]);
+      setSelectedChatApiKeyId("");
+      setChatKeysMessage("");
+      return;
+    }
+
+    setChatKeysLoading(true);
+    setChatKeysMessage("");
+
+    try {
+      const response = await fetch("/api/chat/keys", {
+        headers: {
+          Authorization: `Bearer ${activeSession.access_token}`,
+        },
+      });
+      const data = (await response.json()) as {
+        api_keys?: ChatApiKeyRow[];
+        error?: {
+          message?: string;
+        };
+      };
+
+      if (!response.ok) {
+        throw new Error(data.error?.message ?? "API Key 读取失败");
+      }
+
+      const nextKeys = (data.api_keys ?? []).map((row) => mapChatApiKey(row));
+
+      setChatApiKeys(nextKeys);
+      setSelectedChatApiKeyId((currentId) =>
+        nextKeys.some((key) => key.id === currentId) ? currentId : nextKeys[0]?.id ?? ""
+      );
+    } catch (error) {
+      console.error(error);
+      setChatApiKeys([]);
+      setSelectedChatApiKeyId("");
+      setChatKeysMessage(getErrorMessage(error));
+    } finally {
+      setChatKeysLoading(false);
+    }
+  }, [session]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadEnabledModels();
@@ -1370,19 +1426,28 @@ print(completion.choices[0].message.content)`;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      try {
-        const storedApiKey = window.localStorage.getItem(CHAT_API_KEY_STORAGE_KEY);
+      const preferredModel = chatAvailableModels.find((model) => model.name === "deepseek-chat") ?? chatAvailableModels[0];
 
-        if (storedApiKey) {
-          setChatApiKey(storedApiKey);
-        }
-      } catch {
-        setChatError("无法读取浏览器 localStorage，API Key 只会保存在当前页面状态。");
+      if (!preferredModel) {
+        setChatModel("");
+        return;
       }
+
+      setChatModel((currentModel) =>
+        chatAvailableModels.some((model) => model.name === currentModel) ? currentModel : preferredModel.name
+      );
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [chatAvailableModels]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadChatApiKeys();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadChatApiKeys]);
 
   useEffect(() => {
     chatMessagesEndRef.current?.scrollIntoView({
@@ -1518,20 +1583,6 @@ print(completion.choices[0].message.content)`;
       showCopyMessage(label);
     } catch {
       showCopyMessage("复制失败，请手动复制");
-    }
-  };
-
-  const updateChatApiKey = (value: string) => {
-    setChatApiKey(value);
-
-    try {
-      if (value.trim()) {
-        window.localStorage.setItem(CHAT_API_KEY_STORAGE_KEY, value);
-      } else {
-        window.localStorage.removeItem(CHAT_API_KEY_STORAGE_KEY);
-      }
-    } catch {
-      setChatError("无法写入浏览器 localStorage，请检查浏览器隐私设置。");
     }
   };
 
@@ -1674,6 +1725,8 @@ print(completion.choices[0].message.content)`;
       setApiKeys((items) => [createdKey, ...items]);
       setCreatedApiKey(fullKey);
       setShowKeys(true);
+      setSelectedChatApiKeyId(createdKey.id);
+      void loadChatApiKeys(session);
       showCopyMessage("API Key 已创建，完整密钥只显示这一次。");
     } catch (error) {
       console.error(error);
@@ -1698,9 +1751,12 @@ print(completion.choices[0].message.content)`;
       }
 
       setApiKeys((items) => items.filter((key) => key.id !== item.id));
+      setChatApiKeys((items) => items.filter((key) => key.id !== item.id));
+      setSelectedChatApiKeyId((currentId) => (currentId === item.id ? "" : currentId));
       if (item.oneTimeKey && createdApiKey === item.oneTimeKey) {
         setCreatedApiKey("");
       }
+      void loadChatApiKeys(session);
       showCopyMessage("API Key 已撤销。");
     } catch (error) {
       console.error(error);
@@ -1728,19 +1784,28 @@ print(completion.choices[0].message.content)`;
     event.preventDefault();
 
     const userContent = chatInput.trim();
-    const userApiKey = chatApiKey.trim();
 
     if (!userContent) {
       setChatError("请输入要发送的内容。");
       return;
     }
 
-    if (!userApiKey) {
-      setChatError("请先填写你自己的 API Key。");
+    if (!session) {
+      setChatError("请先登录后再使用 AI 聊天。");
       return;
     }
 
-    const requestModel = chatModel;
+    if (!activeChatApiKey) {
+      setChatError("你还没有 API Key，请先到 API Key 页面创建一个。");
+      return;
+    }
+
+    if (!chatModelInfo) {
+      setChatError("当前没有可用模型，请联系管理员启用模型。");
+      return;
+    }
+
+    const requestModel = chatModelInfo.name;
     const userMessage: ChatMessage = {
       id: createChatMessageId(),
       role: "user",
@@ -1757,14 +1822,15 @@ print(completion.choices[0].message.content)`;
     setChatLoading(true);
 
     try {
-      const response = await fetch("/api/v1/chat/completions", {
+      const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${userApiKey}`,
+          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           model: requestModel,
+          api_key_id: activeChatApiKey.id,
           messages: nextMessages.map((message) => ({
             role: message.role,
             content: message.content,
@@ -1785,6 +1851,10 @@ print(completion.choices[0].message.content)`;
       setChatRawResponse(responseData ? JSON.stringify(responseData, null, 2) : responseText);
 
       if (!response.ok) {
+        if (response.status === 402) {
+          throw new Error("余额不足，请先充值。");
+        }
+
         throw new Error(readChatApiError(responseData, responseText || response.statusText));
       }
 
@@ -1804,6 +1874,7 @@ print(completion.choices[0].message.content)`;
 
       if (session) {
         void loadDashboardData(session);
+        void loadChatApiKeys(session);
       }
     } catch (error) {
       setChatError(getErrorMessage(error));
@@ -2788,7 +2859,7 @@ print(completion.choices[0].message.content)`;
               <SectionTitle
                 label="AI Chat"
                 title="AI 聊天"
-                desc="使用你自己的 API Key 调用 OpenAI-compatible 聊天接口。"
+                desc="登录后使用当前账号的 API Key、余额和启用模型发起正式聊天请求。"
               />
               <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
                 <Card className="rounded-3xl border-cyan-300/15 bg-white/[0.06] text-white shadow-[0_0_28px_rgba(34,211,238,0.08)]">
@@ -2799,17 +2870,44 @@ print(completion.choices[0].message.content)`;
                           <MessageSquare className="h-5 w-5" />
                         </div>
                         <div>
-                          <p className="font-semibold">/api/v1/chat/completions</p>
-                          <p className="text-xs text-slate-400">POST · Content-Type: application/json</p>
+                          <p className="font-semibold">/api/chat</p>
+                          <p className="text-xs text-slate-400">POST · 登录态内部调用</p>
                         </div>
                       </div>
-                      <span className="rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1 text-xs font-semibold text-cyan-100">
-                        当前模型：{chatModel}
-                      </span>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1 text-xs font-semibold text-cyan-100">
+                          当前模型：{chatModelInfo?.name ?? "暂无可用模型"}
+                        </span>
+                        <span className="rounded-full border border-emerald-300/25 bg-emerald-300/10 px-3 py-1 text-xs font-semibold text-emerald-100">
+                          当前余额：¥{balance.toFixed(4)}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="max-h-[520px] min-h-[330px] overflow-y-auto p-5">
-                      {chatMessages.length === 0 ? (
+                      {!activeChatApiKey ? (
+                        <div className="flex min-h-[280px] items-center justify-center rounded-3xl border border-dashed border-amber-300/25 bg-amber-300/10 p-6 text-center">
+                          <div>
+                            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-300/25 bg-amber-300/10 text-amber-100">
+                              <KeyRound className="h-6 w-6" />
+                            </div>
+                            <p className="font-semibold text-amber-50">你还没有 API Key，请先到 API Key 页面创建一个。</p>
+                            <Button
+                              type="button"
+                              onClick={() =>
+                                navigateDashboardModule({
+                                  label: "API Key",
+                                  id: "api-keys",
+                                  tab: "keys",
+                                })
+                              }
+                              className="mt-4 rounded-2xl bg-white text-slate-950 hover:bg-slate-200"
+                            >
+                              去创建 API Key
+                            </Button>
+                          </div>
+                        </div>
+                      ) : chatMessages.length === 0 ? (
                         <div className="flex min-h-[280px] items-center justify-center rounded-3xl border border-dashed border-cyan-300/20 bg-slate-950/50 p-6 text-center">
                           <div>
                             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-cyan-300/25 bg-cyan-300/10 text-cyan-200">
@@ -2817,7 +2915,7 @@ print(completion.choices[0].message.content)`;
                             </div>
                             <p className="font-semibold text-slate-100">还没有聊天记录</p>
                             <p className="mt-2 text-sm leading-6 text-slate-400">
-                              填入 API Key，选择模型，然后发送第一条消息。
+                              选择模型，然后发送第一条消息。Enter 发送，Shift+Enter 换行。
                             </p>
                           </div>
                         </div>
@@ -2877,17 +2975,23 @@ print(completion.choices[0].message.content)`;
                       <textarea
                         value={chatInput}
                         onChange={(event) => setChatInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                            event.preventDefault();
+                            event.currentTarget.form?.requestSubmit();
+                          }
+                        }}
                         disabled={chatLoading}
                         className="mt-2 min-h-28 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300 disabled:cursor-not-allowed disabled:opacity-70"
                         placeholder="请输入要发送给模型的消息"
                       />
                       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                         <p className="text-xs leading-5 text-slate-400">
-                          请求会携带 Authorization: Bearer 你填写的 API Key。
+                          Enter 发送，Shift+Enter 换行；不会把 prompt 或完整 API Key 写入 localStorage。
                         </p>
                         <Button
                           type="submit"
-                          disabled={chatLoading || !chatInput.trim() || !chatApiKey.trim()}
+                          disabled={chatLoading || !chatInput.trim() || !activeChatApiKey || !chatModelInfo || !session}
                           className="rounded-2xl bg-white px-5 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           <Send className="mr-2 h-4 w-4" />
@@ -2903,40 +3007,76 @@ print(completion.choices[0].message.content)`;
                     <CardContent className="p-6">
                       <h3 className="text-lg font-bold">调用设置</h3>
                       <div className="mt-5">
-                        <label className="text-sm text-slate-300">API Key</label>
-                        <input
-                          type="password"
-                          value={chatApiKey}
-                          onChange={(event) => updateChatApiKey(event.target.value)}
-                          autoComplete="off"
-                          spellCheck={false}
-                          className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300"
-                          placeholder="sk_live_..."
-                        />
-                        <p className="mt-2 text-xs leading-5 text-slate-400">
-                          只保存在当前浏览器 localStorage，不会写入代码或提交到仓库。
-                        </p>
+                        <div className="flex items-center justify-between gap-3">
+                          <label className="text-sm text-slate-300">使用 API Key</label>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={chatKeysLoading || !session}
+                            onClick={() => void loadChatApiKeys(session)}
+                            className="text-slate-300 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {chatKeysLoading ? "刷新中..." : "刷新"}
+                          </Button>
+                        </div>
+                        {chatApiKeys.length > 0 ? (
+                          <select
+                            value={activeChatApiKey?.id ?? ""}
+                            onChange={(event) => setSelectedChatApiKeyId(event.target.value)}
+                            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-cyan-300"
+                          >
+                            {chatApiKeys.map((key) => (
+                              <option key={key.id} value={key.id}>
+                                {key.name} - {key.keyPrefix}...
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="mt-2 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
+                            你还没有 API Key，请先到 API Key 页面创建一个。
+                          </div>
+                        )}
+                        {chatKeysMessage ? (
+                          <p className="mt-2 text-xs leading-5 text-rose-200">{chatKeysMessage}</p>
+                        ) : (
+                          <p className="mt-2 text-xs leading-5 text-slate-400">
+                            这里只显示 key_prefix，不显示也不保存完整 API Key。
+                          </p>
+                        )}
                       </div>
 
                       <div className="mt-5">
                         <label className="text-sm text-slate-300">选择模型</label>
                         <select
                           value={chatModel}
-                          onChange={(event) => setChatModel(event.target.value as ChatModel)}
+                          onChange={(event) => setChatModel(event.target.value)}
+                          disabled={chatAvailableModels.length === 0}
                           className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-cyan-300"
                         >
-                          {chatModelOptions.map((model) => (
+                          {chatAvailableModels.map((model) => (
                             <option key={model.name} value={model.name}>
-                              {model.name}
+                              {model.name} - {model.label}
                             </option>
                           ))}
                         </select>
                       </div>
 
-                      <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4">
-                        <p className="font-mono text-sm text-cyan-100">{chatModelInfo.name}</p>
-                        <p className="mt-2 text-sm font-semibold text-white">{chatModelInfo.label}</p>
-                        <p className="mt-2 text-sm leading-6 text-slate-300">{chatModelInfo.desc}</p>
+                      {chatModelInfo ? (
+                        <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4">
+                          <p className="font-mono text-sm text-cyan-100">{chatModelInfo.name}</p>
+                          <p className="mt-2 text-sm font-semibold text-white">{chatModelInfo.label}</p>
+                          <p className="mt-2 text-sm leading-6 text-slate-300">{chatModelInfo.desc}</p>
+                        </div>
+                      ) : (
+                        <div className="mt-5 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
+                          当前没有启用模型，请联系管理员在模型价格管理里启用。
+                        </div>
+                      )}
+
+                      <div className="mt-5 rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4">
+                        <p className="text-sm text-emerald-100">账户余额</p>
+                        <p className="mt-2 text-2xl font-black text-white">¥{balance.toFixed(4)}</p>
                       </div>
                     </CardContent>
                   </Card>
