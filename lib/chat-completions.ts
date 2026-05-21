@@ -80,6 +80,7 @@ const MAX_MESSAGES_JSON_LENGTH = 20_000;
 const MAX_TOKENS_LIMIT = 4096;
 const API_KEY_PREFIX_LENGTH = 16;
 const UPSTREAM_TIMEOUT_MS = 45_000;
+const GENERIC_SERVER_ERROR = "Internal server error";
 const rateLimitBuckets = new Map<string, RateLimitBucket>();
 
 export const corsHeaders = {
@@ -109,6 +110,10 @@ function errorResponse(message: string, status: number, details?: unknown, reque
     },
     { status }
   );
+}
+
+function serverErrorResponse(requestId?: string) {
+  return errorResponse(GENERIC_SERVER_ERROR, 500, undefined, requestId);
 }
 
 function normalizeBaseUrl(url: string) {
@@ -144,9 +149,16 @@ function readApiKeyPrefix(value: string) {
   return value ? value.slice(0, API_KEY_PREFIX_LENGTH) : null;
 }
 
+function redactSensitiveText(value: string) {
+  return value
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/giu, "Bearer [REDACTED]")
+    .replace(/\bsk_(?:live|test)_[A-Za-z0-9_-]{8,}\b/giu, "[REDACTED_API_KEY]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/giu, "[REDACTED_API_KEY]");
+}
+
 function truncateErrorMessage(value: unknown) {
   if (typeof value === "string") {
-    return value.slice(0, 500);
+    return redactSensitiveText(value).slice(0, 500);
   }
 
   if (value === undefined || value === null) {
@@ -154,7 +166,7 @@ function truncateErrorMessage(value: unknown) {
   }
 
   try {
-    return JSON.stringify(value).slice(0, 500);
+    return redactSensitiveText(JSON.stringify(value)).slice(0, 500);
   } catch {
     return "Unknown error";
   }
@@ -410,10 +422,10 @@ async function requireAuthenticatedUser(request: Request) {
       userId: data.user.id,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Authentication failed";
+    console.error("Authenticated user lookup failed", error);
 
     return {
-      response: errorResponse(message, 500),
+      response: serverErrorResponse(),
     };
   }
 }
@@ -620,6 +632,7 @@ async function processChatCompletion({
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Authentication failed";
+    console.error("Chat completion setup failed", error);
     await safeRecordErrorUsage({
       userId: apiKeyRow.user_id,
       apiKeyId: apiKeyRow.id,
@@ -633,7 +646,7 @@ async function processChatCompletion({
       context,
     });
 
-    return errorResponse(message, 500, undefined, context.requestId);
+    return serverErrorResponse(context.requestId);
   }
 
   if (!modelPricing) {
@@ -660,7 +673,7 @@ async function processChatCompletion({
       context,
     });
 
-    return errorResponse(`Supplier ${supplier.name} API key is not configured`, 500, undefined, context.requestId);
+    return serverErrorResponse(context.requestId);
   }
 
   const upstreamPayload = {
@@ -716,7 +729,7 @@ async function processChatCompletion({
       return errorResponse(
         "Upstream request failed",
         upstreamStatus >= 400 ? upstreamStatus : 502,
-        upstreamJson.error?.message ?? upstreamJson,
+        undefined,
         context.requestId
       );
     }
@@ -741,7 +754,7 @@ async function processChatCompletion({
       context,
     });
 
-    return errorResponse("Upstream request failed", isTimeout ? 504 : 502, message, context.requestId);
+    return errorResponse("Upstream request failed", isTimeout ? 504 : 502, isTimeout ? message : undefined, context.requestId);
   } finally {
     clearTimeout(timeout);
   }
@@ -777,7 +790,21 @@ async function processChatCompletion({
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Usage recording failed";
-    return errorResponse(message, 500, undefined, context.requestId);
+    console.error("Usage recording failed", error);
+    await safeRecordErrorUsage({
+      userId: apiKeyRow.user_id,
+      apiKeyId: apiKeyRow.id,
+      apiKeyPrefix: apiKeyRow.key_prefix ?? suppliedKeyPrefix,
+      model: modelPricing.name,
+      supplierName: supplier.name,
+      status: "failed",
+      httpStatus: 500,
+      errorCode: "usage_recording_failed",
+      errorMessage: message,
+      context,
+    });
+
+    return serverErrorResponse(context.requestId);
   }
 
   return jsonResponse(upstreamJson, {
@@ -812,9 +839,9 @@ export async function listAuthenticatedChatApiKeys(request: Request) {
       api_keys: data ?? [],
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to load API keys";
+    console.error("Failed to load authenticated API keys", error);
 
-    return errorResponse(message, 500);
+    return serverErrorResponse();
   }
 }
 
@@ -878,9 +905,9 @@ export async function handleAuthenticatedChatCompletion(request: Request) {
       context,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Authenticated chat failed";
+    console.error("Authenticated chat failed", error);
 
-    return errorResponse(message, 500, undefined, context.requestId);
+    return serverErrorResponse(context.requestId);
   }
 }
 
@@ -974,6 +1001,7 @@ export async function handleExternalChatCompletion(request: Request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Authentication failed";
+    console.error("External chat authentication failed", error);
     await safeRecordErrorUsage({
       userId: apiKeyRow?.user_id,
       apiKeyId: apiKeyRow?.id,
@@ -986,6 +1014,6 @@ export async function handleExternalChatCompletion(request: Request) {
       context,
     });
 
-    return errorResponse(message, 500, undefined, context.requestId);
+    return serverErrorResponse(context.requestId);
   }
 }

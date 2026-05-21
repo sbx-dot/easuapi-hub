@@ -912,7 +912,7 @@ export default function EasyApiHubPage() {
   const [supplierSubmitting, setSupplierSubmitting] = useState(false);
   const [adminSupplierMessage, setAdminSupplierMessage] = useState("");
 
-  const activeKey = apiKeys[0]?.oneTimeKey ?? (apiKeys[0] ? `${apiKeys[0].keyPrefix}...` : "你的_API_Key");
+  const activeKey = apiKeys[0] ? `${apiKeys[0].keyPrefix}...` : "你的_API_Key";
   const userEmail = session?.user.email ?? email;
   const isAdmin = profileRole === "admin";
   const visibleTabs = tabs.filter((tab) => tab.key !== "admin" || isAdmin);
@@ -1727,7 +1727,7 @@ print(completion.choices[0].message.content)`;
       setShowKeys(true);
       setSelectedChatApiKeyId(createdKey.id);
       void loadChatApiKeys(session);
-      showCopyMessage("API Key 已创建，完整密钥只显示这一次。");
+      showCopyMessage("API Key 已创建，完整密钥只可复制一次。");
     } catch (error) {
       console.error(error);
       showCopyMessage("创建失败，请确认 api_keys 表和 RLS 策略已经执行。");
@@ -2730,7 +2730,7 @@ print(completion.choices[0].message.content)`;
 
           {activeDashboardTab === "keys" ? (
             <div id="api-keys" className="scroll-mt-28">
-              <SectionTitle label="API Key" title="密钥管理" desc="创建、复制、显示、隐藏和删除你的接口密钥。" />
+              <SectionTitle label="API Key" title="密钥管理" desc="创建、复制和删除你的接口密钥；列表只展示 Key 前缀。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -2749,8 +2749,13 @@ print(completion.choices[0].message.content)`;
                   </div>
                   {createdApiKey ? (
                     <div className="mb-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4">
-                      <p className="text-sm font-semibold text-cyan-100">请立即保存完整 API Key</p>
-                      <p className="mt-2 break-all font-mono text-xs text-cyan-50">{createdApiKey}</p>
+                      <p className="text-sm font-semibold text-cyan-100">API Key 已创建</p>
+                      <p className="mt-2 break-all font-mono text-xs text-cyan-50">
+                        前缀：{createdApiKey.slice(0, API_KEY_PREFIX_LENGTH)}...
+                      </p>
+                      <p className="mt-2 text-xs leading-5 text-cyan-100/80">
+                        完整密钥不会在页面明文展示；如需接入外部开发者接口，请立即复制，离开后无法再次获取。
+                      </p>
                       <div className="mt-3 flex gap-2">
                         <Button
                           size="sm"
@@ -2778,26 +2783,12 @@ print(completion.choices[0].message.content)`;
                           <div className="min-w-0">
                             <p className="font-semibold">{item.name}</p>
                             <p className="mt-1 break-all font-mono text-xs text-slate-400">
-                              {showKeys && item.oneTimeKey
-                                ? item.oneTimeKey
-                                : `${item.keyPrefix}********************************`}
+                              {showKeys ? `${item.keyPrefix}...` : `${item.keyPrefix}********************************`}
                             </p>
-                            {!item.oneTimeKey ? (
-                              <p className="mt-2 text-xs text-amber-200/80">完整密钥只在创建时显示一次。</p>
-                            ) : null}
+                            <p className="mt-2 text-xs text-amber-200/80">完整密钥不会在列表中显示。</p>
                             <p className="mt-2 text-xs text-slate-500">创建时间：{item.createdAt}</p>
                           </div>
                           <div className="flex shrink-0 gap-2">
-                            {item.oneTimeKey ? (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => copy(item.oneTimeKey ?? "", "已复制 API Key")}
-                                className="hover:bg-white/10 hover:text-white"
-                              >
-                                <Copy className="h-4 w-4" />
-                              </Button>
-                            ) : null}
                             <Button
                               size="sm"
                               variant="ghost"
