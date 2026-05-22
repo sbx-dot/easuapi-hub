@@ -122,6 +122,8 @@ type OrderItem = {
   status: OrderStatus;
   note: string;
   paidAt: string | null;
+  paypalOrderId: string | null;
+  paypalCaptureId: string | null;
 };
 
 type ProfileRow = {
@@ -149,6 +151,8 @@ type OrderRow = {
   note: string | null;
   created_at: string;
   paid_at?: string | null;
+  paypal_order_id?: string | null;
+  paypal_capture_id?: string | null;
 };
 
 type UsageLogRow = {
@@ -180,6 +184,8 @@ type RechargeOrderResult = {
   note: string | null;
   created_at: string;
   paid_at: string | null;
+  paypal_order_id?: string | null;
+  paypal_capture_id?: string | null;
 };
 
 type ModelRow = {
@@ -323,6 +329,8 @@ type AdminUserOrderRow = {
   note: string | null;
   created_at: string;
   paid_at?: string | null;
+  paypal_order_id?: string | null;
+  paypal_capture_id?: string | null;
 };
 
 type AdminRechargeOrderRow = {
@@ -335,6 +343,8 @@ type AdminRechargeOrderRow = {
   note: string | null;
   created_at: string;
   paid_at: string | null;
+  paypal_order_id?: string | null;
+  paypal_capture_id?: string | null;
 };
 
 type FinanceSummaryRow = {
@@ -534,6 +544,7 @@ const activeSectionIdByTab: Record<Tab, string> = {
 };
 
 const rechargeAmountOptions = [10, 30, 50, 100];
+const paypalAmountOptions = [5, 10, 20, 50];
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString("zh-CN", {
@@ -588,6 +599,8 @@ function mapOrder(row: OrderRow): OrderItem {
     status: row.status ?? "pending",
     note: row.note ?? "",
     paidAt: row.paid_at ?? null,
+    paypalOrderId: row.paypal_order_id ?? null,
+    paypalCaptureId: row.paypal_capture_id ?? null,
   };
 }
 
@@ -781,6 +794,20 @@ function getOrderStatusMeta(status: OrderStatus) {
     };
   }
 
+  if (status === "failed") {
+    return {
+      label: "支付失败",
+      className: "border-rose-300/25 bg-rose-300/10 text-rose-200",
+    };
+  }
+
+  if (status === "canceled") {
+    return {
+      label: "已取消",
+      className: "border-slate-300/20 bg-slate-300/10 text-slate-200",
+    };
+  }
+
   return {
     label: status || "未知",
     className: "border-white/15 bg-white/10 text-slate-200",
@@ -810,7 +837,19 @@ function formatOrderMethod(method: string | null | undefined) {
     return "人工充值";
   }
 
+  if (method === "paypal") {
+    return "PayPal Sandbox";
+  }
+
   return method || "未知";
+}
+
+function formatOrderAmount(amount: number | string | null | undefined, method: string | null | undefined) {
+  const value = Number(amount ?? 0);
+  const normalized = Number.isFinite(value) ? value : 0;
+  const prefix = method === "paypal" ? "$" : "¥";
+
+  return `${prefix}${normalized.toFixed(2)}`;
 }
 
 function getErrorMessage(error: unknown) {
@@ -920,6 +959,7 @@ function BrandMark({ className = "" }: { className?: string }) {
 export default function EasyApiHubPage() {
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatMessagesEndRef = useRef<HTMLDivElement | null>(null);
+  const paypalReturnHandledRef = useRef(false);
   const [page, setPage] = useState<Page>("home");
   const [dashboardTab, setDashboardTab] = useState<Tab>("overview");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -971,6 +1011,12 @@ export default function EasyApiHubPage() {
   const [createdRechargeOrder, setCreatedRechargeOrder] = useState<OrderItem | null>(null);
   const [orderMessage, setOrderMessage] = useState("");
   const [submittingPaymentOrderId, setSubmittingPaymentOrderId] = useState("");
+  const [paypalAmountChoice, setPaypalAmountChoice] = useState("10");
+  const [customPaypalAmount, setCustomPaypalAmount] = useState("");
+  const [paypalMessage, setPaypalMessage] = useState("");
+  const [paypalSubmitting, setPaypalSubmitting] = useState(false);
+  const [paypalCapturing, setPaypalCapturing] = useState(false);
+  const [paypalReturnOrderId, setPaypalReturnOrderId] = useState("");
   const [modelList, setModelList] = useState<ModelItem[]>(fallbackModelList);
   const [adminModels, setAdminModels] = useState<ModelItem[]>([]);
   const [adminSuppliers, setAdminSuppliers] = useState<SupplierItem[]>([]);
@@ -1033,6 +1079,7 @@ export default function EasyApiHubPage() {
   const activeDashboardTab = !isAdmin && dashboardTab === "admin" ? "overview" : dashboardTab;
   const selectedRechargeAmount =
     rechargeAmountChoice === "custom" ? Number(customRechargeAmount) : Number(rechargeAmountChoice);
+  const selectedPaypalAmount = paypalAmountChoice === "custom" ? Number(customPaypalAmount) : Number(paypalAmountChoice);
   const selectedModelInfo =
     modelList.find((model) => model.name === selectedModel) ?? modelList[0] ?? fallbackModelList[0];
   const selectedModelName = selectedModelInfo.name;
@@ -1166,6 +1213,12 @@ print(completion.choices[0].message.content)`;
     setCreatedRechargeOrder(null);
     setOrderMessage("");
     setSubmittingPaymentOrderId("");
+    setPaypalAmountChoice("10");
+    setCustomPaypalAmount("");
+    setPaypalMessage("");
+    setPaypalSubmitting(false);
+    setPaypalCapturing(false);
+    setPaypalReturnOrderId("");
     setUsageLogs([]);
     setCreatedApiKey("");
     setDataMessage("");
@@ -1534,7 +1587,7 @@ print(completion.choices[0].message.content)`;
             .order("created_at", { ascending: false }),
           supabase
             .from("orders")
-            .select("id,user_id,amount,method,status,note,created_at,paid_at")
+            .select("id,user_id,amount,method,status,note,created_at,paid_at,paypal_order_id,paypal_capture_id")
             .eq("user_id", userId)
             .order("created_at", { ascending: false }),
           supabase
@@ -1616,6 +1669,93 @@ print(completion.choices[0].message.content)`;
     }
   }, [session]);
 
+  const capturePaypalOrder = useCallback(
+    async (paypalOrderId: string, autoCapture = false) => {
+      if (!session) {
+        setPaypalReturnOrderId(paypalOrderId);
+        setPaypalMessage("PayPal 支付已返回，请登录后点击确认到账。");
+        return;
+      }
+
+      setPaypalCapturing(true);
+      setPaypalMessage(autoCapture ? "PayPal 支付已返回，正在确认到账..." : "");
+
+      try {
+        const response = await fetch("/api/payments/paypal/capture-order", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            paypal_order_id: paypalOrderId,
+          }),
+        });
+        const data = (await response.json()) as {
+          success?: boolean;
+          already_paid?: boolean;
+          error?: {
+            message?: string;
+          };
+        };
+
+        if (!response.ok || !data.success) {
+          throw new Error(data.error?.message ?? "PayPal 确认到账失败");
+        }
+
+        setPaypalMessage(data.already_paid ? "该 PayPal 订单已到账，无需重复确认。" : "PayPal 支付成功，余额已到账。");
+        setPaypalReturnOrderId("");
+        await loadDashboardData(session);
+      } catch (error) {
+        console.error(error);
+        setPaypalReturnOrderId(paypalOrderId);
+        setPaypalMessage(`PayPal 确认失败：${getErrorMessage(error)}`);
+      } finally {
+        setPaypalCapturing(false);
+      }
+    },
+    [loadDashboardData, session]
+  );
+
+  const cancelPaypalOrder = useCallback(
+    async (paypalOrderId: string) => {
+      if (!session) {
+        setPaypalMessage("PayPal 支付已取消。登录状态恢复后，可在订单记录中查看订单。");
+        return;
+      }
+
+      try {
+        const response = await fetch("/api/payments/paypal/cancel-order", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            paypal_order_id: paypalOrderId,
+          }),
+        });
+        const data = (await response.json()) as {
+          success?: boolean;
+          error?: {
+            message?: string;
+          };
+        };
+
+        if (!response.ok || !data.success) {
+          throw new Error(data.error?.message ?? "PayPal 订单取消状态更新失败");
+        }
+
+        setPaypalMessage("PayPal 支付已取消。");
+        await loadDashboardData(session);
+      } catch (error) {
+        console.error(error);
+        setPaypalMessage(`PayPal 支付已取消，但订单状态更新失败：${getErrorMessage(error)}`);
+      }
+    },
+    [loadDashboardData, session]
+  );
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadEnabledModels();
@@ -1648,6 +1788,78 @@ print(completion.choices[0].message.content)`;
 
     return () => window.clearTimeout(timer);
   }, [loadChatApiKeys]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (paypalReturnHandledRef.current) {
+        return;
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      const paypalStatus = params.get("paypal");
+
+      if (!paypalStatus) {
+        return;
+      }
+
+      setPage("dashboard");
+      setDashboardTab("recharge");
+
+      const clearPaypalParams = () => {
+        params.delete("paypal");
+        params.delete("token");
+        params.delete("PayerID");
+        params.delete("paypal_order_id");
+        const nextQuery = params.toString();
+        const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+        window.history.replaceState(null, "", nextUrl);
+      };
+
+      if (paypalStatus === "cancel") {
+        const paypalOrderId = params.get("token") ?? params.get("paypal_order_id") ?? "";
+
+        if (paypalOrderId && !session) {
+          setPaypalMessage("PayPal 支付已取消，正在等待登录状态以更新订单。");
+          return;
+        }
+
+        paypalReturnHandledRef.current = true;
+        clearPaypalParams();
+        if (paypalOrderId) {
+          void cancelPaypalOrder(paypalOrderId);
+        } else {
+          setPaypalMessage("PayPal 支付已取消，订单仍可重新创建。");
+        }
+        return;
+      }
+
+      if (paypalStatus !== "success") {
+        return;
+      }
+
+      const paypalOrderId = params.get("token") ?? params.get("paypal_order_id") ?? "";
+
+      if (!paypalOrderId) {
+        paypalReturnHandledRef.current = true;
+        setPaypalMessage("PayPal 支付已返回，但缺少 PayPal 订单号，请联系管理员。");
+        clearPaypalParams();
+        return;
+      }
+
+      setPaypalReturnOrderId(paypalOrderId);
+
+      if (!session) {
+        setPaypalMessage("PayPal 支付已返回，正在等待登录状态以确认到账。");
+        return;
+      }
+
+      paypalReturnHandledRef.current = true;
+      clearPaypalParams();
+      void capturePaypalOrder(paypalOrderId, true);
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [cancelPaypalOrder, capturePaypalOrder, session]);
 
   useEffect(() => {
     chatMessagesEndRef.current?.scrollIntoView({
@@ -2129,6 +2341,55 @@ print(completion.choices[0].message.content)`;
       setRechargeMessage(`订单创建失败：${getErrorMessage(error)}`);
     } finally {
       setRechargeSubmitting(false);
+    }
+  };
+
+  const handleCreatePaypalOrder = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setPaypalMessage("");
+
+    if (!session) {
+      setPaypalMessage("请先登录后再使用 PayPal Sandbox 支付。");
+      return;
+    }
+
+    if (!Number.isFinite(selectedPaypalAmount) || selectedPaypalAmount <= 0) {
+      setPaypalMessage("请选择或输入大于 0 的 PayPal 充值金额。");
+      return;
+    }
+
+    setPaypalSubmitting(true);
+
+    try {
+      const response = await fetch("/api/payments/paypal/create-order", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          amount: selectedPaypalAmount,
+        }),
+      });
+      const data = (await response.json()) as {
+        approve_url?: string;
+        paypal_order_id?: string;
+        error?: {
+          message?: string;
+        };
+      };
+
+      if (!response.ok || !data.approve_url) {
+        throw new Error(data.error?.message ?? "PayPal 订单创建失败");
+      }
+
+      setPaypalReturnOrderId(data.paypal_order_id ?? "");
+      setPaypalMessage("PayPal 订单已创建，正在跳转到 Sandbox 支付页...");
+      window.location.href = data.approve_url;
+    } catch (error) {
+      console.error(error);
+      setPaypalMessage(`PayPal 订单创建失败：${getErrorMessage(error)}`);
+      setPaypalSubmitting(false);
     }
   };
 
@@ -3632,6 +3893,76 @@ print(completion.choices[0].message.content)`;
                   </CardContent>
                 </Card>
               </div>
+              <Card className="mt-6 rounded-3xl border-cyan-300/15 bg-cyan-300/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="mb-5">
+                    <h3 className="text-xl font-bold">PayPal Sandbox 支付</h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">
+                      使用 PayPal 沙箱订单完成在线充值。支付成功返回后会自动确认到账，也可以手动点击确认。
+                    </p>
+                  </div>
+                  <form onSubmit={handleCreatePaypalOrder}>
+                    <div className="grid gap-3 sm:grid-cols-4">
+                      {paypalAmountOptions.map((amount) => (
+                        <button
+                          key={amount}
+                          type="button"
+                          onClick={() => setPaypalAmountChoice(String(amount))}
+                          className={`rounded-2xl border px-4 py-4 text-left transition ${
+                            paypalAmountChoice === String(amount)
+                              ? "border-cyan-300 bg-cyan-300/15 text-cyan-100"
+                              : "border-white/10 bg-slate-950/60 text-slate-200 hover:border-cyan-300/60"
+                          }`}
+                        >
+                          <span className="block text-sm text-slate-400">Sandbox 金额</span>
+                          <span className="mt-2 block text-2xl font-black">${amount}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-4 max-w-sm">
+                      <label className="text-sm text-slate-300">自定义金额（USD）</label>
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={customPaypalAmount}
+                        onFocus={() => setPaypalAmountChoice("custom")}
+                        onChange={(event) => {
+                          setPaypalAmountChoice("custom");
+                          setCustomPaypalAmount(event.target.value);
+                        }}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="输入其他美元金额"
+                      />
+                    </div>
+                    <div className="mt-5 flex flex-wrap gap-3">
+                      <Button
+                        type="submit"
+                        disabled={paypalSubmitting || paypalCapturing}
+                        className="rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {paypalSubmitting ? "创建中..." : "PayPal Sandbox 支付"}
+                      </Button>
+                      {paypalReturnOrderId ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void capturePaypalOrder(paypalReturnOrderId)}
+                          disabled={paypalCapturing}
+                          className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {paypalCapturing ? "确认中..." : "确认到账"}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </form>
+                  {paypalMessage ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                      {paypalMessage}
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
             </div>
           ) : null}
 
@@ -3663,7 +3994,7 @@ print(completion.choices[0].message.content)`;
                           <tr key={order.id} className="border-b border-white/5">
                             <td className="py-3 pr-3 font-mono text-xs text-cyan-300">{order.id}</td>
                             <td className="py-3 text-slate-300">{order.time}</td>
-                            <td className="py-3 text-slate-300">¥{order.amount.toFixed(2)}</td>
+                            <td className="py-3 text-slate-300">{formatOrderAmount(order.amount, order.method)}</td>
                             <td className="py-3 text-slate-300">{formatOrderMethod(order.method)}</td>
                             <td className="py-3">
                               <OrderStatusBadge status={order.status} />
@@ -4244,7 +4575,7 @@ print(completion.choices[0].message.content)`;
                                 <tr key={order.id} className="border-b border-white/5">
                                   <td className="py-3 text-slate-300">{formatDateTime(order.created_at)}</td>
                                   <td className="py-3 font-mono text-xs text-cyan-300">{order.id}</td>
-                                  <td className="py-3 text-slate-300">¥{Number(order.amount ?? 0).toFixed(2)}</td>
+                                  <td className="py-3 text-slate-300">{formatOrderAmount(order.amount, order.method)}</td>
                                   <td className="py-3 text-slate-300">{formatOrderMethod(order.method)}</td>
                                   <td className="py-3">
                                     <OrderStatusBadge status={order.status ?? "pending"} />
@@ -4496,7 +4827,7 @@ print(completion.choices[0].message.content)`;
                           {recentFinanceOrders.map((order) => (
                             <tr key={order.id} className="border-b border-white/5">
                               <td className="py-3 pr-3 font-mono text-cyan-300">{order.user_email ?? "unknown"}</td>
-                              <td className="py-3 pr-3 text-slate-300">{formatMoney(order.amount, 2)}</td>
+                              <td className="py-3 pr-3 text-slate-300">{formatOrderAmount(order.amount, order.method)}</td>
                               <td className="py-3 pr-3 text-slate-300">{formatOrderMethod(order.method)}</td>
                               <td className="py-3 pr-3">
                                 <OrderStatusBadge status={order.status ?? "pending"} />

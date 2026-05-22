@@ -26,7 +26,9 @@ create table if not exists public.orders (
   status text not null default 'pending',
   note text,
   created_at timestamptz not null default now(),
-  paid_at timestamptz
+  paid_at timestamptz,
+  paypal_order_id text,
+  paypal_capture_id text
 );
 
 alter table public.orders
@@ -34,6 +36,12 @@ add column if not exists note text;
 
 alter table public.orders
 add column if not exists paid_at timestamptz;
+
+alter table public.orders
+add column if not exists paypal_order_id text;
+
+alter table public.orders
+add column if not exists paypal_capture_id text;
 
 create table if not exists public.usage_logs (
   id uuid primary key default gen_random_uuid(),
@@ -135,6 +143,7 @@ create index if not exists api_keys_user_id_revoked_idx on public.api_keys(user_
 create unique index if not exists api_keys_key_hash_idx on public.api_keys(key_hash);
 create index if not exists orders_user_id_idx on public.orders(user_id);
 create index if not exists orders_status_created_at_idx on public.orders(status, created_at);
+create unique index if not exists orders_paypal_order_id_idx on public.orders(paypal_order_id) where paypal_order_id is not null;
 create index if not exists usage_logs_user_id_idx on public.usage_logs(user_id);
 create index if not exists usage_logs_supplier_name_idx on public.usage_logs(supplier_name);
 create index if not exists usage_logs_api_key_id_idx on public.usage_logs(api_key_id);
@@ -519,7 +528,8 @@ begin
     orders.paid_at
   from public.orders
   left join public.profiles on profiles.id = orders.user_id
-  where orders.status in ('pending', 'submitted')
+  where orders.method = 'manual_transfer'
+    and orders.status in ('pending', 'submitted')
   order by orders.created_at asc;
 end;
 $$;
@@ -566,6 +576,10 @@ begin
 
   if target_order.id is null then
     raise exception 'Order not found';
+  end if;
+
+  if target_order.method <> 'manual_transfer' then
+    raise exception 'Only manual transfer orders can be approved here';
   end if;
 
   if target_order.status = 'paid' then
@@ -655,6 +669,10 @@ begin
     raise exception 'Order not found';
   end if;
 
+  if target_order.method <> 'manual_transfer' then
+    raise exception 'Only manual transfer orders can be rejected here';
+  end if;
+
   if target_order.status = 'paid' then
     raise exception 'Order already paid';
   end if;
@@ -695,6 +713,106 @@ $$;
 
 revoke all on function public.reject_recharge_order_admin(uuid) from public;
 grant execute on function public.reject_recharge_order_admin(uuid) to authenticated;
+
+drop function if exists public.complete_paypal_recharge_order(text, text);
+create or replace function public.complete_paypal_recharge_order(
+  target_paypal_order_id text,
+  target_paypal_capture_id text
+)
+returns table (
+  id uuid,
+  user_id uuid,
+  amount numeric,
+  method text,
+  status text,
+  note text,
+  created_at timestamptz,
+  paid_at timestamptz,
+  paypal_order_id text,
+  paypal_capture_id text,
+  new_balance numeric,
+  already_paid boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_order public.orders%rowtype;
+  target_profile public.profiles%rowtype;
+  was_already_paid boolean := false;
+begin
+  if nullif(btrim(coalesce(target_paypal_order_id, '')), '') is null then
+    raise exception 'PayPal order id is required';
+  end if;
+
+  if nullif(btrim(coalesce(target_paypal_capture_id, '')), '') is null then
+    raise exception 'PayPal capture id is required';
+  end if;
+
+  select *
+  into target_order
+  from public.orders
+  where orders.paypal_order_id = btrim(target_paypal_order_id)
+  for update;
+
+  if target_order.id is null then
+    raise exception 'Order not found';
+  end if;
+
+  if target_order.method <> 'paypal' then
+    raise exception 'Order is not a PayPal order';
+  end if;
+
+  if target_order.status = 'paid' then
+    was_already_paid := true;
+  elsif target_order.status in ('failed', 'canceled', 'rejected') then
+    raise exception 'Order cannot be captured';
+  else
+    update public.profiles
+    set balance = balance + target_order.amount
+    where profiles.id = target_order.user_id
+    returning * into target_profile;
+
+    if target_profile.id is null then
+      raise exception 'User profile not found';
+    end if;
+
+    update public.orders
+    set
+      status = 'paid',
+      paid_at = now(),
+      paypal_capture_id = btrim(target_paypal_capture_id)
+    where orders.id = target_order.id
+    returning * into target_order;
+  end if;
+
+  if target_profile.id is null then
+    select *
+    into target_profile
+    from public.profiles
+    where profiles.id = target_order.user_id;
+  end if;
+
+  return query
+  select
+    target_order.id,
+    target_order.user_id,
+    target_order.amount,
+    target_order.method,
+    target_order.status,
+    target_order.note,
+    target_order.created_at,
+    target_order.paid_at,
+    target_order.paypal_order_id,
+    target_order.paypal_capture_id,
+    target_profile.balance,
+    was_already_paid;
+end;
+$$;
+
+revoke all on function public.complete_paypal_recharge_order(text, text) from public;
+grant execute on function public.complete_paypal_recharge_order(text, text) to service_role;
 
 drop function if exists public.list_suppliers_admin();
 create or replace function public.list_suppliers_admin()
