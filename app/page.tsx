@@ -112,12 +112,16 @@ type UsageItem = {
   status: string;
 };
 
+type OrderStatus = "pending" | "submitted" | "paid" | "rejected" | string;
+
 type OrderItem = {
   id: string;
   time: string;
   amount: number;
   method: string;
-  status: string;
+  status: OrderStatus;
+  note: string;
+  paidAt: string | null;
 };
 
 type ProfileRow = {
@@ -138,11 +142,13 @@ type ApiKeyRow = {
 
 type OrderRow = {
   id: string;
+  user_id?: string | null;
   amount: number | string | null;
   method: string | null;
   status: string | null;
   note: string | null;
   created_at: string;
+  paid_at?: string | null;
 };
 
 type UsageLogRow = {
@@ -163,6 +169,17 @@ type BalanceAdjustmentResult = {
   new_balance: number | string;
   amount: number | string;
   note: string | null;
+};
+
+type RechargeOrderResult = {
+  id: string;
+  user_id: string;
+  amount: number | string;
+  method: string;
+  status: OrderStatus;
+  note: string | null;
+  created_at: string;
+  paid_at: string | null;
 };
 
 type ModelRow = {
@@ -305,6 +322,19 @@ type AdminUserOrderRow = {
   status: string | null;
   note: string | null;
   created_at: string;
+  paid_at?: string | null;
+};
+
+type AdminRechargeOrderRow = {
+  id: string;
+  user_id: string;
+  user_email: string | null;
+  amount: number | string | null;
+  method: string | null;
+  status: OrderStatus;
+  note: string | null;
+  created_at: string;
+  paid_at: string | null;
 };
 
 type FinanceSummaryRow = {
@@ -483,6 +513,7 @@ const dashboardNavItems: DashboardNavItem[] = [
   { label: "管理后台", id: "admin", tab: "admin", adminOnly: true },
   { label: "模型价格管理", id: "model-pricing", tab: "admin", adminOnly: true },
   { label: "供应商线路", id: "suppliers", tab: "admin", adminOnly: true },
+  { label: "充值审核", id: "recharge-review", tab: "admin", adminOnly: true },
   { label: "用户管理", id: "users", tab: "admin", adminOnly: true },
   { label: "财务统计", id: "finance", tab: "admin", adminOnly: true },
   { label: "异常请求", id: "errors", tab: "admin", adminOnly: true },
@@ -501,6 +532,8 @@ const activeSectionIdByTab: Record<Tab, string> = {
   docs: "docs",
   admin: "admin",
 };
+
+const rechargeAmountOptions = [10, 30, 50, 100];
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString("zh-CN", {
@@ -551,8 +584,10 @@ function mapOrder(row: OrderRow): OrderItem {
     id: row.id,
     time: formatDateTime(row.created_at),
     amount: Number(row.amount ?? 0),
-    method: row.note ? `${row.method ?? "未知"} / ${row.note}` : row.method ?? "未知",
+    method: row.method ?? "未知",
     status: row.status ?? "pending",
+    note: row.note ?? "",
+    paidAt: row.paid_at ?? null,
   };
 }
 
@@ -717,6 +752,67 @@ function formatNullableDateTime(value: string | null) {
   return value ? formatDateTime(value) : "暂无";
 }
 
+function getOrderStatusMeta(status: OrderStatus) {
+  if (status === "pending") {
+    return {
+      label: "待支付",
+      className: "border-amber-300/25 bg-amber-300/10 text-amber-200",
+    };
+  }
+
+  if (status === "submitted") {
+    return {
+      label: "待审核",
+      className: "border-cyan-300/25 bg-cyan-300/10 text-cyan-100",
+    };
+  }
+
+  if (status === "paid") {
+    return {
+      label: "已到账",
+      className: "border-emerald-300/25 bg-emerald-300/10 text-emerald-200",
+    };
+  }
+
+  if (status === "rejected") {
+    return {
+      label: "已拒绝",
+      className: "border-rose-300/25 bg-rose-300/10 text-rose-200",
+    };
+  }
+
+  return {
+    label: status || "未知",
+    className: "border-white/15 bg-white/10 text-slate-200",
+  };
+}
+
+function OrderStatusBadge({ status }: { status: OrderStatus }) {
+  const meta = getOrderStatusMeta(status);
+
+  return (
+    <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${meta.className}`}>
+      {meta.label}
+    </span>
+  );
+}
+
+function formatOrderMethod(method: string | null | undefined) {
+  if (method === "manual_transfer") {
+    return "手动转账";
+  }
+
+  if (method === "admin_adjust") {
+    return "管理员调整";
+  }
+
+  if (method === "manual") {
+    return "人工充值";
+  }
+
+  return method || "未知";
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
@@ -867,12 +963,24 @@ export default function EasyApiHubPage() {
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
   const [usageLogs, setUsageLogs] = useState<UsageItem[]>([]);
   const [orders, setOrders] = useState<OrderItem[]>([]);
+  const [rechargeAmountChoice, setRechargeAmountChoice] = useState("30");
+  const [customRechargeAmount, setCustomRechargeAmount] = useState("");
+  const [rechargeNote, setRechargeNote] = useState("");
+  const [rechargeMessage, setRechargeMessage] = useState("");
+  const [rechargeSubmitting, setRechargeSubmitting] = useState(false);
+  const [createdRechargeOrder, setCreatedRechargeOrder] = useState<OrderItem | null>(null);
+  const [orderMessage, setOrderMessage] = useState("");
+  const [submittingPaymentOrderId, setSubmittingPaymentOrderId] = useState("");
   const [modelList, setModelList] = useState<ModelItem[]>(fallbackModelList);
   const [adminModels, setAdminModels] = useState<ModelItem[]>([]);
   const [adminSuppliers, setAdminSuppliers] = useState<SupplierItem[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUserItem[]>([]);
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [adminUsersMessage, setAdminUsersMessage] = useState("");
+  const [adminRechargeOrders, setAdminRechargeOrders] = useState<AdminRechargeOrderRow[]>([]);
+  const [adminRechargeLoading, setAdminRechargeLoading] = useState(false);
+  const [adminRechargeMessage, setAdminRechargeMessage] = useState("");
+  const [reviewingRechargeOrderId, setReviewingRechargeOrderId] = useState("");
   const [userSearch, setUserSearch] = useState("");
   const [userRoleFilter, setUserRoleFilter] = useState<AdminUserRoleFilter>("all");
   const [userSort, setUserSort] = useState<AdminUserSort>("balance_desc");
@@ -923,6 +1031,8 @@ export default function EasyApiHubPage() {
   const isAdmin = profileRole === "admin";
   const visibleTabs = tabs.filter((tab) => tab.key !== "admin" || isAdmin);
   const activeDashboardTab = !isAdmin && dashboardTab === "admin" ? "overview" : dashboardTab;
+  const selectedRechargeAmount =
+    rechargeAmountChoice === "custom" ? Number(customRechargeAmount) : Number(rechargeAmountChoice);
   const selectedModelInfo =
     modelList.find((model) => model.name === selectedModel) ?? modelList[0] ?? fallbackModelList[0];
   const selectedModelName = selectedModelInfo.name;
@@ -1048,6 +1158,14 @@ print(completion.choices[0].message.content)`;
     setBalance(0);
     setApiKeys([]);
     setOrders([]);
+    setRechargeAmountChoice("30");
+    setCustomRechargeAmount("");
+    setRechargeNote("");
+    setRechargeMessage("");
+    setRechargeSubmitting(false);
+    setCreatedRechargeOrder(null);
+    setOrderMessage("");
+    setSubmittingPaymentOrderId("");
     setUsageLogs([]);
     setCreatedApiKey("");
     setDataMessage("");
@@ -1061,6 +1179,10 @@ print(completion.choices[0].message.content)`;
     setAdminUsers([]);
     setAdminUsersLoading(false);
     setAdminUsersMessage("");
+    setAdminRechargeOrders([]);
+    setAdminRechargeLoading(false);
+    setAdminRechargeMessage("");
+    setReviewingRechargeOrderId("");
     setUserSearch("");
     setUserRoleFilter("all");
     setUserSort("balance_desc");
@@ -1243,6 +1365,31 @@ print(completion.choices[0].message.content)`;
     return matchedRow ? mapAdminUser(matchedRow) : null;
   }, []);
 
+  const loadAdminRechargeOrders = useCallback(async () => {
+    if (!supabase) {
+      setAdminRechargeOrders([]);
+      return;
+    }
+
+    setAdminRechargeLoading(true);
+    setAdminRechargeMessage("");
+
+    try {
+      const { data, error } = await supabase.rpc("list_recharge_orders_admin");
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminRechargeOrders((data ?? []) as AdminRechargeOrderRow[]);
+    } catch (error) {
+      console.error(error);
+      setAdminRechargeMessage("充值审核订单读取失败，请确认充值审核 RPC 已执行。");
+    } finally {
+      setAdminRechargeLoading(false);
+    }
+  }, []);
+
   const adjustUserBalanceAdmin = useCallback(
     async (targetUserId: string, adjustmentAmount: number, adjustmentNote: string) => {
       if (!supabase) {
@@ -1387,7 +1534,7 @@ print(completion.choices[0].message.content)`;
             .order("created_at", { ascending: false }),
           supabase
             .from("orders")
-            .select("id,amount,method,status,note,created_at")
+            .select("id,user_id,amount,method,status,note,created_at,paid_at")
             .eq("user_id", userId)
             .order("created_at", { ascending: false }),
           supabase
@@ -1524,14 +1671,15 @@ print(completion.choices[0].message.content)`;
   useEffect(() => {
     const timer = window.setTimeout(() => {
       if (isAdmin) {
-        void loadAdminUsers();
+        void Promise.all([loadAdminUsers(), loadAdminRechargeOrders()]);
       } else {
         setAdminUsers([]);
+        setAdminRechargeOrders([]);
       }
     }, 250);
 
     return () => window.clearTimeout(timer);
-  }, [isAdmin, loadAdminUsers]);
+  }, [isAdmin, loadAdminRechargeOrders, loadAdminUsers]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1936,8 +2084,108 @@ print(completion.choices[0].message.content)`;
     }
   };
 
-  const recharge = (amount: number) => {
-    showCopyMessage(`已选择 ¥${amount}，当前版本暂不接支付；订单和余额需要后台人工处理。`);
+  const handleCreateRechargeOrder = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setRechargeMessage("");
+    setCreatedRechargeOrder(null);
+
+    if (!supabase || !session) {
+      setRechargeMessage("请先登录后再创建充值订单。");
+      return;
+    }
+
+    if (!Number.isFinite(selectedRechargeAmount) || selectedRechargeAmount <= 0) {
+      setRechargeMessage("请选择或输入大于 0 的充值金额。");
+      return;
+    }
+
+    setRechargeSubmitting(true);
+
+    try {
+      const { data, error } = await supabase.rpc("create_recharge_order", {
+        recharge_amount: selectedRechargeAmount,
+        recharge_note: rechargeNote.trim() || null,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      const result = Array.isArray(data)
+        ? (data[0] as RechargeOrderResult | undefined)
+        : (data as RechargeOrderResult | null);
+
+      if (!result) {
+        throw new Error("订单创建失败，请稍后重试。");
+      }
+
+      const createdOrder = mapOrder(result);
+      setCreatedRechargeOrder(createdOrder);
+      setRechargeMessage("订单创建成功，请完成手动转账后点击“我已付款”。");
+      setRechargeNote("");
+      await loadDashboardData(session);
+    } catch (error) {
+      console.error(error);
+      setRechargeMessage(`订单创建失败：${getErrorMessage(error)}`);
+    } finally {
+      setRechargeSubmitting(false);
+    }
+  };
+
+  const submitRechargePayment = async (orderId: string, messageTarget: "recharge" | "orders" = "recharge") => {
+    if (!supabase || !session) {
+      const message = "请先登录后再提交付款状态。";
+      if (messageTarget === "orders") {
+        setOrderMessage(message);
+      } else {
+        setRechargeMessage(message);
+      }
+      return;
+    }
+
+    setSubmittingPaymentOrderId(orderId);
+    if (messageTarget === "orders") {
+      setOrderMessage("");
+    } else {
+      setRechargeMessage("");
+    }
+
+    try {
+      const { data, error } = await supabase.rpc("submit_recharge_order", {
+        target_order_id: orderId,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      const result = Array.isArray(data)
+        ? (data[0] as RechargeOrderResult | undefined)
+        : (data as RechargeOrderResult | null);
+
+      if (result) {
+        const submittedOrder = mapOrder(result);
+        setCreatedRechargeOrder((currentOrder) => (currentOrder?.id === submittedOrder.id ? submittedOrder : currentOrder));
+      }
+
+      const message = "已提交付款信息，等待管理员审核。";
+      if (messageTarget === "orders") {
+        setOrderMessage(message);
+      } else {
+        setRechargeMessage(message);
+      }
+      await loadDashboardData(session);
+    } catch (error) {
+      console.error(error);
+      const message = `提交失败：${getErrorMessage(error)}`;
+      if (messageTarget === "orders") {
+        setOrderMessage(message);
+      } else {
+        setRechargeMessage(message);
+      }
+    } finally {
+      setSubmittingPaymentOrderId("");
+    }
   };
 
   const handleManualRecharge = async (event: FormEvent<HTMLFormElement>) => {
@@ -2076,6 +2324,47 @@ print(completion.choices[0].message.content)`;
       setAdminUsersMessage(`余额调整失败：${getErrorMessage(error)}`);
     } finally {
       setBalanceAdjustSubmitting(false);
+    }
+  };
+
+  const reviewRechargeOrderAdmin = async (order: AdminRechargeOrderRow, action: "approve" | "reject") => {
+    setAdminRechargeMessage("");
+
+    if (!supabase || !session || !isAdmin) {
+      setAdminRechargeMessage("只有管理员可以审核充值订单。");
+      return;
+    }
+
+    setReviewingRechargeOrderId(order.id);
+
+    try {
+      const { error } = await supabase.rpc(
+        action === "approve" ? "approve_recharge_order_admin" : "reject_recharge_order_admin",
+        {
+          target_order_id: order.id,
+        }
+      );
+
+      if (error) {
+        throw error;
+      }
+
+      setAdminRechargeMessage(
+        action === "approve"
+          ? `订单 ${order.id} 已通过，余额已增加 ¥${Number(order.amount ?? 0).toFixed(2)}。`
+          : `订单 ${order.id} 已拒绝。`
+      );
+      await Promise.all([
+        loadAdminRechargeOrders(),
+        loadAdminUsers(),
+        loadAdminFinance(),
+        loadDashboardData(session),
+      ]);
+    } catch (error) {
+      console.error(error);
+      setAdminRechargeMessage(`审核失败：${getErrorMessage(error)}`);
+    } finally {
+      setReviewingRechargeOrderId("");
     }
   };
 
@@ -3231,30 +3520,133 @@ print(completion.choices[0].message.content)`;
 
           {activeDashboardTab === "recharge" ? (
             <div id="recharge" className="scroll-mt-28">
-              <SectionTitle label="Recharge" title="充值中心" desc="当前只保留演示按钮，不接支付；余额和订单需要后台人工处理。" />
-              <div className="grid gap-4 md:grid-cols-4">
-                {[10, 50, 100, 500].map((amount) => (
-                  <Card key={amount} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
-                    <CardContent className="p-6">
-                      <p className="text-sm text-slate-400">充值金额</p>
-                      <p className="mt-3 text-3xl font-black">¥{amount}</p>
-                      <Button onClick={() => recharge(amount)} className="mt-5 w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
-                        模拟充值
+              <SectionTitle label="Recharge" title="充值中心" desc="手动转账创建订单，付款后提交给管理员审核到账。" />
+              <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+                <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                  <CardContent className="p-6">
+                    <form onSubmit={handleCreateRechargeOrder}>
+                      <div className="mb-5">
+                        <h3 className="text-xl font-bold">创建充值订单</h3>
+                        <p className="mt-2 text-sm leading-6 text-slate-400">
+                          选择金额并提交订单，转账完成后点击“我已付款”，管理员审核通过后余额到账。
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-4">
+                        {rechargeAmountOptions.map((amount) => (
+                          <button
+                            key={amount}
+                            type="button"
+                            onClick={() => setRechargeAmountChoice(String(amount))}
+                            className={`rounded-2xl border px-4 py-4 text-left transition ${
+                              rechargeAmountChoice === String(amount)
+                                ? "border-cyan-300 bg-cyan-300/15 text-cyan-100"
+                                : "border-white/10 bg-slate-950/60 text-slate-200 hover:border-cyan-300/60"
+                            }`}
+                          >
+                            <span className="block text-sm text-slate-400">充值金额</span>
+                            <span className="mt-2 block text-2xl font-black">¥{amount}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <div className="mt-4 grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+                        <div>
+                          <label className="text-sm text-slate-300">自定义金额</label>
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={customRechargeAmount}
+                            onFocus={() => setRechargeAmountChoice("custom")}
+                            onChange={(event) => {
+                              setRechargeAmountChoice("custom");
+                              setCustomRechargeAmount(event.target.value);
+                            }}
+                            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                            placeholder="输入其他金额"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-sm text-slate-300">备注</label>
+                          <input
+                            value={rechargeNote}
+                            onChange={(event) => setRechargeNote(event.target.value)}
+                            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                            placeholder="转账姓名 / 付款账号后四位等"
+                          />
+                        </div>
+                      </div>
+                      <Button
+                        type="submit"
+                        disabled={rechargeSubmitting}
+                        className="mt-5 rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {rechargeSubmitting ? "创建中..." : "创建充值订单"}
                       </Button>
-                    </CardContent>
-                  </Card>
-                ))}
+                    </form>
+                    {rechargeMessage ? (
+                      <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                        {rechargeMessage}
+                      </div>
+                    ) : null}
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                  <CardContent className="p-6">
+                    <h3 className="text-xl font-bold">付款说明</h3>
+                    {createdRechargeOrder ? (
+                      <div className="mt-5 space-y-4">
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                          <p className="text-sm text-slate-400">订单号</p>
+                          <p className="mt-2 break-all font-mono text-sm text-cyan-200">{createdRechargeOrder.id}</p>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                            <p className="text-sm text-slate-400">充值金额</p>
+                            <p className="mt-2 text-2xl font-black text-white">¥{createdRechargeOrder.amount.toFixed(2)}</p>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                            <p className="text-sm text-slate-400">订单状态</p>
+                            <div className="mt-3">
+                              <OrderStatusBadge status={createdRechargeOrder.status} />
+                            </div>
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm leading-6 text-cyan-100">
+                          请按订单金额手动转账，并在备注里填写订单号后 6 位。管理员微信/支付宝收款码占位，正式收款信息上线前由管理员另行提供。
+                        </div>
+                        <Button
+                          type="button"
+                          onClick={() => void submitRechargePayment(createdRechargeOrder.id)}
+                          disabled={createdRechargeOrder.status !== "pending" || submittingPaymentOrderId === createdRechargeOrder.id}
+                          className="w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {submittingPaymentOrderId === createdRechargeOrder.id ? "提交中..." : "我已付款"}
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/70 p-5 text-sm leading-6 text-slate-300">
+                        创建订单后，这里会显示订单号、金额、收款说明和“我已付款”按钮。
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
             </div>
           ) : null}
 
           {activeDashboardTab === "orders" ? (
             <div id="orders" className="scroll-mt-28">
-              <SectionTitle label="Orders" title="订单记录" desc="从 Supabase orders 表读取，当前不允许前端自己创建订单。" />
+              <SectionTitle label="Orders" title="订单记录" desc="查看充值订单状态，待支付订单可以继续提交付款信息。" />
               <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
+                  {orderMessage ? (
+                    <div className="mb-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                      {orderMessage}
+                    </div>
+                  ) : null}
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[520px] text-left text-sm">
+                    <table className="w-full min-w-[860px] text-left text-sm">
                       <thead className="text-slate-400">
                         <tr className="border-b border-white/10">
                           <th className="py-3">订单号</th>
@@ -3262,23 +3654,44 @@ print(completion.choices[0].message.content)`;
                           <th className="py-3">金额</th>
                           <th className="py-3">方式</th>
                           <th className="py-3">状态</th>
+                          <th className="py-3">备注</th>
+                          <th className="py-3">操作</th>
                         </tr>
                       </thead>
                       <tbody>
                         {orders.map((order) => (
                           <tr key={order.id} className="border-b border-white/5">
-                            <td className="py-3 text-slate-300">{order.id}</td>
+                            <td className="py-3 pr-3 font-mono text-xs text-cyan-300">{order.id}</td>
                             <td className="py-3 text-slate-300">{order.time}</td>
-                            <td className="py-3 text-slate-300">¥{order.amount}</td>
-                            <td className="py-3 text-slate-300">{order.method}</td>
-                            <td className="py-3 text-emerald-300">{order.status}</td>
+                            <td className="py-3 text-slate-300">¥{order.amount.toFixed(2)}</td>
+                            <td className="py-3 text-slate-300">{formatOrderMethod(order.method)}</td>
+                            <td className="py-3">
+                              <OrderStatusBadge status={order.status} />
+                            </td>
+                            <td className="max-w-[220px] truncate py-3 text-slate-300">{order.note || "无"}</td>
+                            <td className="py-3">
+                              {order.method === "manual_transfer" && order.status === "pending" ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => void submitRechargePayment(order.id, "orders")}
+                                  disabled={submittingPaymentOrderId === order.id}
+                                  className="hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {submittingPaymentOrderId === order.id ? "提交中..." : "我已付款"}
+                                </Button>
+                              ) : (
+                                <span className="text-slate-500">-</span>
+                              )}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                     {orders.length === 0 ? (
                       <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
-                        还没有订单记录。后续接人工充值或支付后，这里会显示 orders 数据。
+                        还没有订单记录。创建充值订单后，这里会显示审核进度。
                       </div>
                     ) : null}
                   </div>
@@ -3406,6 +3819,94 @@ print(completion.choices[0].message.content)`;
                       {manualRechargeMessage}
                     </div>
                   ) : null}
+                </CardContent>
+              </Card>
+              <Card id="recharge-review" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-xl font-bold">充值审核</h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-400">
+                        审核用户手动转账订单。通过后订单变为 paid 并给用户余额加款；拒绝后不会增加余额。
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={() => void loadAdminRechargeOrders()}
+                      disabled={adminRechargeLoading}
+                      variant="outline"
+                      className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {adminRechargeLoading ? "刷新中..." : "刷新审核"}
+                    </Button>
+                  </div>
+
+                  {adminRechargeMessage ? (
+                    <div className="mb-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                      {adminRechargeMessage}
+                    </div>
+                  ) : null}
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[980px] text-left text-sm">
+                      <thead className="text-slate-400">
+                        <tr className="border-b border-white/10">
+                          <th className="py-3">订单号</th>
+                          <th className="py-3">用户</th>
+                          <th className="py-3">金额</th>
+                          <th className="py-3">方式</th>
+                          <th className="py-3">状态</th>
+                          <th className="py-3">备注</th>
+                          <th className="py-3">创建时间</th>
+                          <th className="py-3">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminRechargeOrders.map((order) => (
+                          <tr key={order.id} className="border-b border-white/5 align-top">
+                            <td className="py-3 pr-3 font-mono text-xs text-cyan-300">{order.id}</td>
+                            <td className="py-3 pr-3 font-mono text-xs text-slate-300">{order.user_email ?? order.user_id}</td>
+                            <td className="py-3 pr-3 text-slate-300">¥{Number(order.amount ?? 0).toFixed(2)}</td>
+                            <td className="py-3 pr-3 text-slate-300">{formatOrderMethod(order.method)}</td>
+                            <td className="py-3 pr-3">
+                              <OrderStatusBadge status={order.status} />
+                            </td>
+                            <td className="max-w-[240px] truncate py-3 pr-3 text-slate-300">{order.note ?? "无"}</td>
+                            <td className="py-3 pr-3 text-slate-300">{formatDateTime(order.created_at)}</td>
+                            <td className="py-3">
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={reviewingRechargeOrderId === order.id}
+                                  onClick={() => void reviewRechargeOrderAdmin(order, "approve")}
+                                  className="text-emerald-200 hover:bg-emerald-300/10 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  通过
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={reviewingRechargeOrderId === order.id}
+                                  onClick={() => void reviewRechargeOrderAdmin(order, "reject")}
+                                  className="text-rose-200 hover:bg-rose-300/10 hover:text-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  拒绝
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {adminRechargeOrders.length === 0 ? (
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
+                        {adminRechargeLoading ? "正在读取充值审核订单..." : "暂无待支付或待审核订单。"}
+                      </div>
+                    ) : null}
+                  </div>
                 </CardContent>
               </Card>
               <Card id="users" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
@@ -3744,8 +4245,10 @@ print(completion.choices[0].message.content)`;
                                   <td className="py-3 text-slate-300">{formatDateTime(order.created_at)}</td>
                                   <td className="py-3 font-mono text-xs text-cyan-300">{order.id}</td>
                                   <td className="py-3 text-slate-300">¥{Number(order.amount ?? 0).toFixed(2)}</td>
-                                  <td className="py-3 text-slate-300">{order.method ?? "unknown"}</td>
-                                  <td className="py-3 text-emerald-300">{order.status ?? "pending"}</td>
+                                  <td className="py-3 text-slate-300">{formatOrderMethod(order.method)}</td>
+                                  <td className="py-3">
+                                    <OrderStatusBadge status={order.status ?? "pending"} />
+                                  </td>
                                   <td className="py-3 text-slate-300">{order.note ?? "无"}</td>
                                 </tr>
                               ))}
@@ -3994,8 +4497,10 @@ print(completion.choices[0].message.content)`;
                             <tr key={order.id} className="border-b border-white/5">
                               <td className="py-3 pr-3 font-mono text-cyan-300">{order.user_email ?? "unknown"}</td>
                               <td className="py-3 pr-3 text-slate-300">{formatMoney(order.amount, 2)}</td>
-                              <td className="py-3 pr-3 text-slate-300">{order.method ?? "unknown"}</td>
-                              <td className="py-3 pr-3 text-emerald-300">{order.status ?? "pending"}</td>
+                              <td className="py-3 pr-3 text-slate-300">{formatOrderMethod(order.method)}</td>
+                              <td className="py-3 pr-3">
+                                <OrderStatusBadge status={order.status ?? "pending"} />
+                              </td>
                               <td className="py-3 pr-3 text-slate-300">{order.note ?? "无"}</td>
                               <td className="py-3 pr-3 text-slate-300">{formatDateTime(order.created_at)}</td>
                             </tr>

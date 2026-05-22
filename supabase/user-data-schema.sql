@@ -25,11 +25,15 @@ create table if not exists public.orders (
   method text not null,
   status text not null default 'pending',
   note text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  paid_at timestamptz
 );
 
 alter table public.orders
 add column if not exists note text;
+
+alter table public.orders
+add column if not exists paid_at timestamptz;
 
 create table if not exists public.usage_logs (
   id uuid primary key default gen_random_uuid(),
@@ -130,6 +134,7 @@ create index if not exists api_keys_user_id_idx on public.api_keys(user_id);
 create index if not exists api_keys_user_id_revoked_idx on public.api_keys(user_id, revoked);
 create unique index if not exists api_keys_key_hash_idx on public.api_keys(key_hash);
 create index if not exists orders_user_id_idx on public.orders(user_id);
+create index if not exists orders_status_created_at_idx on public.orders(status, created_at);
 create index if not exists usage_logs_user_id_idx on public.usage_logs(user_id);
 create index if not exists usage_logs_supplier_name_idx on public.usage_logs(supplier_name);
 create index if not exists usage_logs_api_key_id_idx on public.usage_logs(api_key_id);
@@ -328,6 +333,368 @@ set
   sort_order = excluded.sort_order;
 
 drop function if exists public.manual_recharge(text, numeric, text);
+
+drop function if exists public.create_recharge_order(numeric, text);
+create or replace function public.create_recharge_order(
+  recharge_amount numeric,
+  recharge_note text default null
+)
+returns table (
+  id uuid,
+  user_id uuid,
+  amount numeric,
+  method text,
+  status text,
+  note text,
+  created_at timestamptz,
+  paid_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  actor_id uuid := auth.uid();
+  actor_role text;
+  inserted_order public.orders%rowtype;
+begin
+  if actor_id is null then
+    raise exception 'not authenticated';
+  end if;
+
+  select profiles.role
+  into actor_role
+  from public.profiles
+  where profiles.id = actor_id;
+
+  if actor_role is null or actor_role not in ('admin', 'user') then
+    raise exception 'User profile not found';
+  end if;
+
+  if recharge_amount is null or recharge_amount <= 0 then
+    raise exception 'Recharge amount must be greater than 0';
+  end if;
+
+  insert into public.orders (user_id, amount, method, status, note)
+  values (actor_id, recharge_amount, 'manual_transfer', 'pending', nullif(btrim(coalesce(recharge_note, '')), ''))
+  returning * into inserted_order;
+
+  return query
+  select
+    inserted_order.id,
+    inserted_order.user_id,
+    inserted_order.amount,
+    inserted_order.method,
+    inserted_order.status,
+    inserted_order.note,
+    inserted_order.created_at,
+    inserted_order.paid_at;
+end;
+$$;
+
+revoke all on function public.create_recharge_order(numeric, text) from public;
+grant execute on function public.create_recharge_order(numeric, text) to authenticated;
+
+drop function if exists public.submit_recharge_order(uuid);
+create or replace function public.submit_recharge_order(target_order_id uuid)
+returns table (
+  id uuid,
+  user_id uuid,
+  amount numeric,
+  method text,
+  status text,
+  note text,
+  created_at timestamptz,
+  paid_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  actor_id uuid := auth.uid();
+  actor_role text;
+  target_order public.orders%rowtype;
+begin
+  if actor_id is null then
+    raise exception 'not authenticated';
+  end if;
+
+  select profiles.role
+  into actor_role
+  from public.profiles
+  where profiles.id = actor_id;
+
+  if actor_role is null or actor_role not in ('admin', 'user') then
+    raise exception 'User profile not found';
+  end if;
+
+  select *
+  into target_order
+  from public.orders
+  where orders.id = target_order_id
+    and orders.user_id = actor_id
+  for update;
+
+  if target_order.id is null then
+    raise exception 'Order not found';
+  end if;
+
+  if target_order.method <> 'manual_transfer' then
+    raise exception 'Only manual transfer orders can be submitted';
+  end if;
+
+  if target_order.status = 'paid' then
+    raise exception 'Order already paid';
+  end if;
+
+  if target_order.status = 'rejected' then
+    raise exception 'Order already rejected';
+  end if;
+
+  if target_order.status not in ('pending', 'submitted') then
+    raise exception 'Order cannot be submitted';
+  end if;
+
+  if target_order.status = 'pending' then
+    update public.orders
+    set status = 'submitted'
+    where orders.id = target_order_id
+    returning * into target_order;
+  end if;
+
+  return query
+  select
+    target_order.id,
+    target_order.user_id,
+    target_order.amount,
+    target_order.method,
+    target_order.status,
+    target_order.note,
+    target_order.created_at,
+    target_order.paid_at;
+end;
+$$;
+
+revoke all on function public.submit_recharge_order(uuid) from public;
+grant execute on function public.submit_recharge_order(uuid) to authenticated;
+
+drop function if exists public.list_recharge_orders_admin();
+create or replace function public.list_recharge_orders_admin()
+returns table (
+  id uuid,
+  user_id uuid,
+  user_email text,
+  amount numeric,
+  method text,
+  status text,
+  note text,
+  created_at timestamptz,
+  paid_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'not admin';
+  end if;
+
+  return query
+  select
+    orders.id,
+    orders.user_id,
+    profiles.email,
+    orders.amount,
+    orders.method,
+    orders.status,
+    orders.note,
+    orders.created_at,
+    orders.paid_at
+  from public.orders
+  left join public.profiles on profiles.id = orders.user_id
+  where orders.status in ('pending', 'submitted')
+  order by orders.created_at asc;
+end;
+$$;
+
+revoke all on function public.list_recharge_orders_admin() from public;
+grant execute on function public.list_recharge_orders_admin() to authenticated;
+
+drop function if exists public.approve_recharge_order_admin(uuid);
+create or replace function public.approve_recharge_order_admin(target_order_id uuid)
+returns table (
+  id uuid,
+  user_id uuid,
+  user_email text,
+  amount numeric,
+  method text,
+  status text,
+  note text,
+  created_at timestamptz,
+  paid_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_order public.orders%rowtype;
+  updated_order public.orders%rowtype;
+  target_email text;
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'not admin';
+  end if;
+
+  select *
+  into target_order
+  from public.orders
+  where orders.id = target_order_id
+  for update;
+
+  if target_order.id is null then
+    raise exception 'Order not found';
+  end if;
+
+  if target_order.status = 'paid' then
+    raise exception 'Order already paid';
+  end if;
+
+  if target_order.status = 'rejected' then
+    raise exception 'Order already rejected';
+  end if;
+
+  if target_order.status not in ('pending', 'submitted') then
+    raise exception 'Order cannot be approved';
+  end if;
+
+  update public.profiles
+  set balance = balance + target_order.amount
+  where profiles.id = target_order.user_id
+  returning profiles.email into target_email;
+
+  if not found then
+    raise exception 'User profile not found';
+  end if;
+
+  update public.orders
+  set
+    status = 'paid',
+    note = 'admin approved',
+    paid_at = now()
+  where orders.id = target_order.id
+  returning * into updated_order;
+
+  return query
+  select
+    updated_order.id,
+    updated_order.user_id,
+    target_email,
+    updated_order.amount,
+    updated_order.method,
+    updated_order.status,
+    updated_order.note,
+    updated_order.created_at,
+    updated_order.paid_at;
+end;
+$$;
+
+revoke all on function public.approve_recharge_order_admin(uuid) from public;
+grant execute on function public.approve_recharge_order_admin(uuid) to authenticated;
+
+drop function if exists public.reject_recharge_order_admin(uuid);
+create or replace function public.reject_recharge_order_admin(target_order_id uuid)
+returns table (
+  id uuid,
+  user_id uuid,
+  user_email text,
+  amount numeric,
+  method text,
+  status text,
+  note text,
+  created_at timestamptz,
+  paid_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_order public.orders%rowtype;
+  updated_order public.orders%rowtype;
+  target_email text;
+begin
+  if not exists (
+    select 1
+    from public.profiles
+    where profiles.id = auth.uid()
+      and profiles.role = 'admin'
+  ) then
+    raise exception 'not admin';
+  end if;
+
+  select *
+  into target_order
+  from public.orders
+  where orders.id = target_order_id
+  for update;
+
+  if target_order.id is null then
+    raise exception 'Order not found';
+  end if;
+
+  if target_order.status = 'paid' then
+    raise exception 'Order already paid';
+  end if;
+
+  if target_order.status = 'rejected' then
+    raise exception 'Order already rejected';
+  end if;
+
+  if target_order.status not in ('pending', 'submitted') then
+    raise exception 'Order cannot be rejected';
+  end if;
+
+  select profiles.email
+  into target_email
+  from public.profiles
+  where profiles.id = target_order.user_id;
+
+  update public.orders
+  set
+    status = 'rejected',
+    note = 'admin rejected'
+  where orders.id = target_order.id
+  returning * into updated_order;
+
+  return query
+  select
+    updated_order.id,
+    updated_order.user_id,
+    target_email,
+    updated_order.amount,
+    updated_order.method,
+    updated_order.status,
+    updated_order.note,
+    updated_order.created_at,
+    updated_order.paid_at;
+end;
+$$;
+
+revoke all on function public.reject_recharge_order_admin(uuid) from public;
+grant execute on function public.reject_recharge_order_admin(uuid) to authenticated;
 
 drop function if exists public.list_suppliers_admin();
 create or replace function public.list_suppliers_admin()
@@ -694,7 +1061,8 @@ returns table (
   method text,
   status text,
   note text,
-  created_at timestamptz
+  created_at timestamptz,
+  paid_at timestamptz
 )
 language plpgsql
 security definer
@@ -717,7 +1085,8 @@ begin
     orders.method,
     orders.status,
     orders.note,
-    orders.created_at
+    orders.created_at,
+    orders.paid_at
   from public.orders
   where orders.user_id = target_user_id
   order by orders.created_at desc
@@ -1429,6 +1798,20 @@ on public.orders
 for select
 to authenticated
 using ((select auth.uid()) = user_id);
+
+drop policy if exists "Admins can read all orders" on public.orders;
+create policy "Admins can read all orders"
+on public.orders
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+);
 
 drop policy if exists "Users can read own usage logs" on public.usage_logs;
 create policy "Users can read own usage logs"
