@@ -93,7 +93,7 @@ Default supplier inserted by the SQL:
 
 ### Admin Manual Recharge
 
-The same SQL file also creates the `manual_recharge` RPC function. It lets only users with `profiles.role = 'admin'` manually add balance to another user and create a paid order record.
+The admin recharge UI resolves the target user through `list_users_admin`, then uses the same `adjust_user_balance_admin` RPC as the user-management balance controls. Successful recharges create a paid `orders` record with `method = 'admin_adjust'`.
 Admins can also manage model prices in the dashboard. RLS allows normal users to read only enabled models, while admins can read all models and insert/update model rows.
 Admins can manage supplier routes in the dashboard. RLS prevents normal users from reading `suppliers`; admins can list suppliers through `list_suppliers_admin`, which returns only whether the API key is configured, not the full key.
 

@@ -156,7 +156,7 @@ type UsageLogRow = {
   created_at: string;
 };
 
-type ManualRechargeResult = {
+type BalanceAdjustmentResult = {
   order_id: string;
   user_id: string;
   email: string;
@@ -729,6 +729,12 @@ function getErrorMessage(error: unknown) {
   return "未知错误";
 }
 
+function isAdminPermissionError(error: unknown) {
+  const message = getErrorMessage(error).toLowerCase();
+
+  return message.includes("not admin") || message.includes("only admins");
+}
+
 function createChatMessageId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -1212,6 +1218,53 @@ print(completion.choices[0].message.content)`;
       setAdminUsersLoading(false);
     }
   }, [userRoleFilter, userSearch, userSort]);
+
+  const findAdminUserByEmail = useCallback(async (targetEmail: string) => {
+    if (!supabase) {
+      return null;
+    }
+
+    const normalizedEmail = targetEmail.trim().toLowerCase();
+    const { data, error } = await supabase.rpc("list_users_admin", {
+      search_email: targetEmail,
+      role_filter: "all",
+      sort_key: "created_at",
+      sort_direction: "desc",
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const matchedRow = ((data ?? []) as AdminUserRow[]).find(
+      (row) => row.email?.trim().toLowerCase() === normalizedEmail
+    );
+
+    return matchedRow ? mapAdminUser(matchedRow) : null;
+  }, []);
+
+  const adjustUserBalanceAdmin = useCallback(
+    async (targetUserId: string, adjustmentAmount: number, adjustmentNote: string) => {
+      if (!supabase) {
+        throw new Error("Supabase 未配置");
+      }
+
+      const { data, error } = await supabase.rpc("adjust_user_balance_admin", {
+        target_user_id: targetUserId,
+        adjustment_amount: adjustmentAmount,
+        adjustment_note: adjustmentNote,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      return Array.isArray(data)
+        ? (data[0] as BalanceAdjustmentResult | undefined)
+        : (data as BalanceAdjustmentResult | null);
+    },
+    []
+  );
 
   const loadAdminFinance = useCallback(async () => {
     if (!supabase) {
@@ -1892,45 +1945,50 @@ print(completion.choices[0].message.content)`;
     setManualRechargeMessage("");
 
     if (!supabase || !session || !isAdmin) {
-      setManualRechargeMessage("只有管理员可以执行人工充值。");
+      setManualRechargeMessage("not admin");
       return;
     }
 
     const targetEmail = manualRechargeEmail.trim();
     const rechargeAmount = Number(manualRechargeAmount);
+    const rechargeNote = manualRechargeNote.trim();
 
     if (!targetEmail || !Number.isFinite(rechargeAmount) || rechargeAmount <= 0) {
       setManualRechargeMessage("请输入用户邮箱，并填写大于 0 的充值金额。");
       return;
     }
 
+    if (!rechargeNote) {
+      setManualRechargeMessage("请填写备注。");
+      return;
+    }
+
     setManualRechargeSubmitting(true);
 
     try {
-      const { data, error } = await supabase.rpc("manual_recharge", {
-        target_email: targetEmail,
-        recharge_amount: rechargeAmount,
-        recharge_note: manualRechargeNote.trim() || null,
-      });
+      const targetUser = await findAdminUserByEmail(targetEmail);
 
-      if (error) {
-        throw error;
+      if (!targetUser) {
+        setManualRechargeMessage("目标用户不存在");
+        return;
       }
 
-      const result = Array.isArray(data)
-        ? (data[0] as ManualRechargeResult | undefined)
-        : (data as ManualRechargeResult | null);
+      const result = await adjustUserBalanceAdmin(targetUser.id, rechargeAmount, rechargeNote);
       setManualRechargeMessage(
-        `充值成功：${result?.email ?? targetEmail} 增加 ¥${Number(result?.amount ?? rechargeAmount).toFixed(2)}，当前余额 ¥${Number(result?.new_balance ?? 0).toFixed(2)}。`
+        `充值成功：${result?.email ?? targetUser.email} 增加 ¥${Number(result?.amount ?? rechargeAmount).toFixed(2)}，当前余额 ¥${Number(result?.new_balance ?? targetUser.balance + rechargeAmount).toFixed(2)}。`
       );
       setManualRechargeEmail("");
       setManualRechargeAmount("");
       setManualRechargeNote("");
 
-      await loadDashboardData(session);
+      await Promise.all([loadAdminUsers(), loadDashboardData(session)]);
     } catch (error) {
       console.error(error);
-      setManualRechargeMessage(`充值失败：${getErrorMessage(error)}`);
+      if (isAdminPermissionError(error)) {
+        setManualRechargeMessage("not admin");
+      } else {
+        setManualRechargeMessage(`充值失败：${getErrorMessage(error)}`);
+      }
     } finally {
       setManualRechargeSubmitting(false);
     }
@@ -2006,15 +2064,7 @@ print(completion.choices[0].message.content)`;
     setBalanceAdjustSubmitting(true);
 
     try {
-      const { error } = await supabase.rpc("adjust_user_balance_admin", {
-        target_user_id: balanceAdjustUser.id,
-        adjustment_amount: adjustmentAmount,
-        adjustment_note: note,
-      });
-
-      if (error) {
-        throw error;
-      }
+      await adjustUserBalanceAdmin(balanceAdjustUser.id, adjustmentAmount, note);
 
       setAdminUsersMessage(
         `${balanceAdjustUser.email} 余额已${balanceAdjustMode === "increase" ? "增加" : "减少"} ¥${parsedAmount.toFixed(2)}。`
