@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MiniMax model icon">
+  <g fill="none" stroke="#F43F5E" stroke-linecap="round" stroke-width="4">
+    <path d="M11 37V27"/>
+    <path d="M18 45V19"/>
+    <path d="M25 53V11"/>
+    <path d="M32 48V16"/>
+    <path d="M39 53V11"/>
+    <path d="M46 45V19"/>
+    <path d="M53 37V27"/>
+  </g>
+  <g fill="none" stroke="#FB7185" stroke-linecap="round" stroke-width="2.5">
+    <path d="M7 32h4"/>
+    <path d="M53 32h4"/>
+  </g>
+</svg>

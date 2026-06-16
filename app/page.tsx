@@ -1,15 +1,12 @@
 "use client";
 
 import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
 import Image from "next/image";
 import type { Session } from "@supabase/supabase-js";
 import {
   Activity,
-  ArrowRight,
   Bot,
   BookOpen,
-  Check,
   Copy,
   CreditCard,
   Database,
@@ -17,24 +14,50 @@ import {
   EyeOff,
   FileText,
   Gauge,
+  Globe2,
   KeyRound,
   LogOut,
   Menu,
   MessageSquare,
   Play,
   Plus,
+  Search,
   Send,
   Settings,
-  ShieldCheck,
   Trash2,
   User,
   Wallet,
   X,
-  Code2,
-  Server,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { MarketingHome } from "@/components/marketing-site";
+import { VendorLogo } from "@/components/vendor-logo";
+import {
+  defaultLanguage,
+  getLanguageMeta,
+  languages,
+  languageChangeEventName,
+  languageStorageKey,
+} from "@/lib/i18n";
+import type { LanguageCode } from "@/lib/i18n";
+import {
+  capabilityLabels,
+  compactCapabilityLabels,
+  compactPlatformTagLabels,
+  capabilityOrder,
+  getProviderById,
+  getModelIconBySeries,
+  getSeriesById,
+  modelCatalog,
+  modelSeriesList,
+  platformTagLabels,
+  platformTagOrder,
+  resolveModelIcon,
+  resolveModelProviderId,
+  resolveModelSeriesId,
+} from "@/lib/model-catalog";
+import type { CatalogModel, ModelCapability, ModelPlatformTag, ModelProviderId, ModelSeriesId } from "@/lib/model-catalog";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type Page = "home" | "dashboard";
@@ -49,6 +72,552 @@ type Tab =
   | "orders"
   | "docs"
   | "admin";
+
+const pendingChatPromptStorageKey = "eelapi.pendingChatPrompt";
+type ChatNavigationHistoryMode = "push" | "replace";
+type OAuthProvider = "google" | "github";
+
+const oauthProviderEnabled: Record<OAuthProvider, boolean> = {
+  google: process.env.NEXT_PUBLIC_GOOGLE_AUTH_ENABLED !== "false",
+  github: process.env.NEXT_PUBLIC_GITHUB_AUTH_ENABLED !== "false",
+};
+
+type DashboardCopy = {
+  languageLabel: string;
+  functionNav: string;
+  dashboardNav: string;
+  closeNav: string;
+  consoleLabel: string;
+  consoleTitle: string;
+  consoleDesc: string;
+  signedInUser: string;
+  logout: string;
+  loadingData: string;
+  tabs: Record<Tab, string>;
+  adminNav: Record<string, string>;
+  auth: {
+    loginTitle: string;
+    signupTitle: string;
+    login: string;
+    signup: string;
+    email: string;
+    password: string;
+    passwordPlaceholder: string;
+    helper: string;
+    emailAuthLabel: string;
+    oauthDivider: string;
+    googleLogin: string;
+    githubLogin: string;
+    googlePending: string;
+    githubPending: string;
+    oauthRedirecting: string;
+    oauthError: string;
+    submitting: string;
+    loginRequiredChat: string;
+    missingSupabase: string;
+    invalidCredentials: string;
+    signupConfirm: string;
+    noSession: string;
+  };
+  overview: {
+    label: string;
+    title: string;
+    desc: string;
+    balance: string;
+    apiKeys: string;
+    todayRequests: string;
+    models: string;
+  };
+  keys: {
+    label: string;
+    title: string;
+    desc: string;
+    show: string;
+    hide: string;
+    create: string;
+    created: string;
+    prefix: string;
+    copy: string;
+    saved: string;
+    empty: string;
+    completeKeyHint: string;
+    listHint: string;
+  };
+  playground: {
+    label: string;
+    title: string;
+    desc: string;
+    chooseModel: string;
+    input: string;
+    send: string;
+  };
+  chat: {
+    label: string;
+    title: string;
+    desc: string;
+    endpointHint: string;
+    currentModel: string;
+    noModel: string;
+    balance: string;
+    missingKey: string;
+    createKey: string;
+    emptyTitle: string;
+    emptyDesc: string;
+    waiting: string;
+    inputLabel: string;
+    placeholder: string;
+    inputHint: string;
+    sending: string;
+    send: string;
+    settings: string;
+    useApiKey: string;
+    refresh: string;
+    refreshing: string;
+    keyPrefixHint: string;
+    chooseModel: string;
+    modelSearchPlaceholder: string;
+    noModelMatches: string;
+    selectedModel: string;
+    noEnabledModel: string;
+    rawResponse: string;
+    rawResponseHint: string;
+    copyRaw: string;
+    user: string;
+    assistant: string;
+    insufficientBalance: string;
+    loginRequired: string;
+    missingKeyError: string;
+    noModelError: string;
+    emptyInput: string;
+  };
+};
+
+type DashboardCopyOverrides = Partial<
+  Omit<DashboardCopy, "tabs" | "adminNav" | "auth" | "overview" | "keys" | "playground" | "chat">
+> & {
+  tabs?: Partial<Record<Tab, string>>;
+  adminNav?: Record<string, string>;
+  auth?: Partial<DashboardCopy["auth"]>;
+  overview?: Partial<DashboardCopy["overview"]>;
+  keys?: Partial<DashboardCopy["keys"]>;
+  playground?: Partial<DashboardCopy["playground"]>;
+  chat?: Partial<DashboardCopy["chat"]>;
+};
+
+function mergeDashboardCopy(copy: DashboardCopyOverrides): DashboardCopy {
+  return {
+    ...dashboardCopyZh,
+    ...copy,
+    tabs: { ...dashboardCopyZh.tabs, ...copy.tabs },
+    adminNav: { ...dashboardCopyZh.adminNav, ...copy.adminNav },
+    auth: { ...dashboardCopyZh.auth, ...copy.auth },
+    overview: { ...dashboardCopyZh.overview, ...copy.overview },
+    keys: { ...dashboardCopyZh.keys, ...copy.keys },
+    playground: { ...dashboardCopyZh.playground, ...copy.playground },
+    chat: { ...dashboardCopyZh.chat, ...copy.chat },
+  };
+}
+
+const dashboardCopyZh: DashboardCopy = {
+  languageLabel: "语言",
+  functionNav: "功能导航",
+  dashboardNav: "后台导航",
+  closeNav: "关闭功能导航",
+  consoleLabel: "控制台",
+  consoleTitle: "eelapi 开发者控制台",
+  consoleDesc: "统一管理 AI 聊天、API Key、模型、用量、充值和运营后台，让接入、调试和账单核对保持在同一工作流中。",
+  signedInUser: "已登录用户",
+  logout: "退出",
+  loadingData: "正在读取你的 Supabase 数据...",
+  tabs: {
+    overview: "概览",
+    chat: "AI 聊天",
+    keys: "API Key",
+    playground: "接口调试",
+    models: "模型列表",
+    usage: "用量记录",
+    recharge: "充值中心",
+    orders: "充值记录",
+    docs: "API 文档",
+    admin: "管理后台",
+  },
+  adminNav: {
+    modelPricing: "模型价格管理",
+    suppliers: "供应商线路",
+    rechargeReview: "充值审核/记录",
+    users: "用户管理",
+    finance: "财务统计",
+    errors: "异常请求",
+    monitoring: "系统监控",
+  },
+  auth: {
+    loginTitle: "登录控制台",
+    signupTitle: "注册账号",
+    login: "登录",
+    signup: "注册",
+    email: "邮箱",
+    password: "密码",
+    passwordPlaceholder: "至少 6 位",
+    helper: "登录后可管理 AI 聊天、API Key、接口调试、用量记录、账户账单和后台运营信息。",
+    emailAuthLabel: "邮箱登录 / 注册",
+    oauthDivider: "或使用第三方账号继续",
+    googleLogin: "使用 Google 登录",
+    githubLogin: "使用 GitHub 登录",
+    googlePending: "Google 登录正在配置中，请暂时使用邮箱登录。",
+    githubPending: "GitHub 登录正在配置中，请暂时使用邮箱登录。",
+    oauthRedirecting: "正在跳转到第三方登录页面...",
+    oauthError: "第三方登录暂不可用，请暂时使用邮箱登录。",
+    submitting: "处理中...",
+    loginRequiredChat: "请先登录后继续 AI 对话，登录成功后会自动带入刚才的问题。",
+    missingSupabase: "请先在 Netlify 或本地 .env.local 中配置 Supabase URL 和 Publishable key。",
+    invalidCredentials: "请输入邮箱，并使用至少 6 位密码。",
+    signupConfirm: "注册成功，请先打开邮箱确认邮件，然后再登录。",
+    noSession: "登录没有返回会话，请检查 Supabase 邮箱确认设置。",
+  },
+  overview: {
+    label: "Overview",
+    title: "平台概览",
+    desc: "查看余额、请求数、密钥数量和模型数量。",
+    balance: "当前余额",
+    apiKeys: "API Key 数量",
+    todayRequests: "今日请求",
+    models: "可用模型",
+  },
+  keys: {
+    label: "API Key",
+    title: "密钥管理",
+    desc: "创建、复制和删除你的接口密钥；列表只展示 Key 前缀。",
+    show: "显示密钥",
+    hide: "隐藏密钥",
+    create: "新建 API Key",
+    created: "API Key 已创建",
+    prefix: "前缀",
+    copy: "复制",
+    saved: "我已保存",
+    empty: "还没有 API Key，请点击新建。",
+    completeKeyHint: "完整密钥不会在页面明文展示；如需接入外部开发者接口，请立即复制，离开后无法再次获取。",
+    listHint: "完整密钥不会在列表中显示。",
+  },
+  playground: {
+    label: "Playground",
+    title: "接口调试台",
+    desc: "用于验证模型、消息格式和响应流程，便于开发者在接入前完成调试。",
+    chooseModel: "选择模型",
+    input: "输入内容",
+    send: "发送请求",
+  },
+  chat: {
+    label: "AI Chat",
+    title: "AI Console",
+    desc: "使用当前账号的 API Key、余额和启用模型发起正式聊天请求，适合接入前验证和日常调试。",
+    endpointHint: "登录态内部调用",
+    currentModel: "当前模型",
+    noModel: "暂无可用模型",
+    balance: "当前余额",
+    missingKey: "你还没有 API Key，请先到 API Key 页面创建一个。",
+    createKey: "去创建 API Key",
+    emptyTitle: "准备发送第一条消息",
+    emptyDesc: "从首页带入的问题会出现在下方输入框。确认模型和 API Key 后即可发送。",
+    waiting: "正在等待模型回复...",
+    inputLabel: "向模型提问",
+    placeholder: "请输入要发送给模型的消息",
+    inputHint: "Enter 发送，Shift+Enter 换行；不会把 prompt 或完整 API Key 写入 localStorage。",
+    sending: "发送中...",
+    send: "发送",
+    settings: "调用设置",
+    useApiKey: "使用 API Key",
+    refresh: "刷新",
+    refreshing: "刷新中...",
+    keyPrefixHint: "这里只显示 key_prefix，不显示也不保存完整 API Key。",
+    chooseModel: "选择模型",
+    modelSearchPlaceholder: "搜索模型名称、slug、厂商或系列",
+    noModelMatches: "没有匹配的模型",
+    selectedModel: "当前选择",
+    noEnabledModel: "当前没有启用模型，请联系管理员在模型价格管理里启用。",
+    rawResponse: "原始返回",
+    rawResponseHint: "发送成功后，这里会显示原始 JSON 返回。",
+    copyRaw: "复制接口返回结果",
+    user: "你",
+    assistant: "Assistant",
+    insufficientBalance: "余额不足，请先充值。",
+    loginRequired: "请先登录后再使用 AI 聊天。",
+    missingKeyError: "你还没有 API Key，请先到 API Key 页面创建一个。",
+    noModelError: "当前没有可用模型，请联系管理员启用模型。",
+    emptyInput: "请输入要发送的内容。",
+  },
+};
+
+const dashboardCopyEn = mergeDashboardCopy({
+  languageLabel: "Language",
+  functionNav: "Navigation",
+  dashboardNav: "Dashboard",
+  closeNav: "Close navigation",
+  consoleLabel: "Console",
+  consoleTitle: "eelapi developer console",
+  consoleDesc: "Manage AI Chat, API Keys, models, usage, top-ups, and operations in one workflow for integration and billing review.",
+  signedInUser: "Signed-in user",
+  logout: "Log out",
+  loadingData: "Loading your Supabase data...",
+  tabs: {
+    overview: "Overview",
+    chat: "AI Chat",
+    keys: "API Key",
+    playground: "Playground",
+    models: "Models",
+    usage: "Usage",
+    recharge: "Top-up",
+    orders: "Top-up records",
+    docs: "API docs",
+    admin: "Admin",
+  },
+  adminNav: {
+    modelPricing: "Model pricing",
+    suppliers: "Suppliers",
+    rechargeReview: "Top-up review",
+    users: "Users",
+    finance: "Finance",
+    errors: "Errors",
+    monitoring: "Monitoring",
+  },
+  auth: {
+    loginTitle: "Log in to console",
+    signupTitle: "Create account",
+    login: "Log in",
+    signup: "Sign up",
+    email: "Email",
+    password: "Password",
+    passwordPlaceholder: "At least 6 characters",
+    helper: "After signing in, you can use AI chat, API Keys, request validation, usage records, billing, and operations.",
+    emailAuthLabel: "Email login / sign up",
+    oauthDivider: "Or continue with a third-party account",
+    googleLogin: "Continue with Google",
+    githubLogin: "Continue with GitHub",
+    googlePending: "Google login is being configured. Please use email login for now.",
+    githubPending: "GitHub login is being configured. Please use email login for now.",
+    oauthRedirecting: "Redirecting to the third-party login page...",
+    oauthError: "Third-party login is temporarily unavailable. Please use email login for now.",
+    submitting: "Processing...",
+    loginRequiredChat: "Please log in to continue AI chat. Your question will be kept after login.",
+    missingSupabase: "Configure Supabase URL and Publishable key in Netlify or .env.local first.",
+    invalidCredentials: "Enter an email and a password with at least 6 characters.",
+    signupConfirm: "Account created. Please confirm the email, then log in.",
+    noSession: "No session returned. Check Supabase email confirmation settings.",
+  },
+  overview: {
+    label: "Overview",
+    title: "Platform overview",
+    desc: "Review balance, requests, API Keys, and enabled models.",
+    balance: "Balance",
+    apiKeys: "API Keys",
+    todayRequests: "Requests today",
+    models: "Models",
+  },
+  keys: {
+    title: "API Key management",
+    desc: "Create, copy, and revoke API Keys. The list only shows key prefixes.",
+    show: "Show keys",
+    hide: "Hide keys",
+    create: "New API Key",
+    created: "API Key created",
+    prefix: "Prefix",
+    copy: "Copy",
+    saved: "Saved",
+    empty: "No API Key yet. Create one to start.",
+    completeKeyHint: "The full key is not shown later. Copy it now if you need external API access.",
+    listHint: "Full keys are never shown in the list.",
+  },
+  playground: {
+    title: "Online playground",
+    desc: "Validate models, message format, and response flow before integration.",
+    chooseModel: "Model",
+    input: "Input",
+    send: "Send request",
+  },
+  chat: {
+    title: "AI Console",
+    desc: "Send real chat requests with your account API Key, balance, and enabled models for integration checks and daily debugging.",
+    endpointHint: "Authenticated internal call",
+    currentModel: "Model",
+    noModel: "No model",
+    balance: "Balance",
+    missingKey: "No API Key yet. Create one before using AI Chat.",
+    createKey: "Create API Key",
+    emptyTitle: "Ready for the first message",
+    emptyDesc: "Questions from the homepage appear in the input below. Confirm model and API Key, then send.",
+    waiting: "Waiting for model response...",
+    inputLabel: "Ask the model",
+    placeholder: "Enter a message for the model",
+    inputHint: "Enter to send, Shift+Enter for new line. Prompts and full API Keys are not written to localStorage.",
+    sending: "Sending...",
+    send: "Send",
+    settings: "Run settings",
+    useApiKey: "API Key",
+    refresh: "Refresh",
+    refreshing: "Refreshing...",
+    keyPrefixHint: "Only key_prefix is shown here. Full API Keys are not displayed or stored.",
+    chooseModel: "Model",
+    modelSearchPlaceholder: "Search model name, slug, provider, or series",
+    noModelMatches: "No matching models",
+    selectedModel: "Selected",
+    noEnabledModel: "No enabled model. Ask an admin to enable one in model pricing.",
+    rawResponse: "Raw response",
+    rawResponseHint: "The raw JSON response appears here after a successful request.",
+    copyRaw: "Copy raw response",
+    user: "You",
+    insufficientBalance: "Insufficient balance. Please top up first.",
+    loginRequired: "Please log in before using AI Chat.",
+    missingKeyError: "No API Key yet. Create one before using AI Chat.",
+    noModelError: "No available model. Contact an admin to enable a model.",
+    emptyInput: "Enter a message first.",
+  },
+});
+
+function mergeDashboardCopyFromEnglish(copy: DashboardCopyOverrides): DashboardCopy {
+  return {
+    ...dashboardCopyEn,
+    ...copy,
+    tabs: { ...dashboardCopyEn.tabs, ...copy.tabs },
+    adminNav: { ...dashboardCopyEn.adminNav, ...copy.adminNav },
+    auth: { ...dashboardCopyEn.auth, ...copy.auth },
+    overview: { ...dashboardCopyEn.overview, ...copy.overview },
+    keys: { ...dashboardCopyEn.keys, ...copy.keys },
+    playground: { ...dashboardCopyEn.playground, ...copy.playground },
+    chat: { ...dashboardCopyEn.chat, ...copy.chat },
+  };
+}
+
+const dashboardCopies: Record<LanguageCode, DashboardCopy> = {
+  zh: dashboardCopyZh,
+  en: dashboardCopyEn,
+  ja: mergeDashboardCopyFromEnglish({
+    languageLabel: "言語",
+    functionNav: "機能ナビ",
+    dashboardNav: "コンソール",
+    closeNav: "ナビを閉じる",
+    consoleLabel: "コンソール",
+    consoleTitle: "API 管理コンソール",
+    consoleDesc: "API Key、AI チャット、テスト、モデル、利用記録、請求を管理します。",
+    signedInUser: "ログイン中",
+    logout: "ログアウト",
+    loadingData: "Supabase データを読み込み中...",
+    tabs: { overview: "概要", chat: "AI チャット", keys: "API Key", playground: "オンラインテスト", models: "モデル", usage: "利用記録", recharge: "チャージ", orders: "チャージ記録", docs: "API ドキュメント", admin: "管理" },
+    auth: { loginTitle: "コンソールにログイン", signupTitle: "アカウント作成", login: "ログイン", signup: "登録", email: "メール", password: "パスワード", passwordPlaceholder: "6 文字以上", helper: "ログイン後、AI チャット、API Key、検証、利用記録、請求を管理できます。", emailAuthLabel: "メールでログイン / 登録", oauthDivider: "または外部アカウントで続行", googleLogin: "Google でログイン", githubLogin: "GitHub でログイン", googlePending: "Google ログインは設定中です。しばらくはメールログインをご利用ください。", githubPending: "GitHub ログインは設定中です。しばらくはメールログインをご利用ください。", submitting: "処理中...", loginRequiredChat: "AI チャットを続けるにはログインしてください。質問は保持されます。" },
+    overview: { title: "プラットフォーム概要", desc: "残高、リクエスト、API Key、モデル数を確認します。", balance: "残高", apiKeys: "API Key", todayRequests: "本日のリクエスト", models: "モデル" },
+    chat: { title: "AI チャットコンソール", desc: "アカウントの API Key、残高、有効モデルで正式なチャットリクエストを送信します。", missingKey: "API Key がありません。先に作成してください。", createKey: "API Key を作成", emptyTitle: "AI チャットを開始", emptyDesc: "ホームからの質問は下の入力欄に入ります。モデルと API Key を確認して送信してください。", inputLabel: "モデルへ質問", send: "送信", sending: "送信中...", settings: "呼び出し設定" },
+  }),
+  ko: mergeDashboardCopyFromEnglish({
+    languageLabel: "언어",
+    functionNav: "기능 탐색",
+    dashboardNav: "콘솔",
+    closeNav: "탐색 닫기",
+    consoleLabel: "콘솔",
+    consoleTitle: "API 관리 콘솔",
+    consoleDesc: "API Key, AI 채팅, 테스트, 모델, 사용 기록, 청구를 관리합니다.",
+    signedInUser: "로그인 사용자",
+    logout: "로그아웃",
+    loadingData: "Supabase 데이터를 읽는 중...",
+    tabs: { overview: "개요", chat: "AI 채팅", keys: "API Key", playground: "온라인 테스트", models: "모델", usage: "사용 기록", recharge: "충전", orders: "충전 기록", docs: "API 문서", admin: "관리" },
+    auth: { loginTitle: "콘솔 로그인", signupTitle: "계정 만들기", login: "로그인", signup: "가입", email: "이메일", password: "비밀번호", passwordPlaceholder: "6자 이상", helper: "로그인 후 AI 채팅, API Key, 테스트, 사용 기록, 청구를 관리할 수 있습니다.", submitting: "처리 중...", loginRequiredChat: "AI 채팅을 계속하려면 로그인하세요. 질문은 유지됩니다." },
+    overview: { title: "플랫폼 개요", balance: "잔액", apiKeys: "API Key", todayRequests: "오늘 요청", models: "모델" },
+    chat: { title: "AI 채팅 콘솔", desc: "계정 API Key, 잔액, 활성 모델로 실제 채팅 요청을 보냅니다.", missingKey: "API Key가 없습니다. 먼저 생성하세요.", createKey: "API Key 생성", emptyTitle: "AI 채팅 준비", inputLabel: "모델에 질문", send: "보내기", sending: "전송 중...", settings: "호출 설정" },
+  }),
+  es: mergeDashboardCopyFromEnglish({
+    languageLabel: "Idioma",
+    functionNav: "Navegación",
+    dashboardNav: "Consola",
+    closeNav: "Cerrar navegación",
+    consoleLabel: "Consola",
+    consoleTitle: "Consola de gestión API",
+    consoleDesc: "Gestiona API Keys, chat AI, pruebas, modelos, uso y facturación.",
+    signedInUser: "Usuario conectado",
+    logout: "Salir",
+    loadingData: "Cargando datos de Supabase...",
+    tabs: { overview: "Resumen", chat: "Chat AI", keys: "API Key", playground: "Pruebas", models: "Modelos", usage: "Uso", recharge: "Recarga", orders: "Registros", docs: "Docs API", admin: "Admin" },
+    auth: { loginTitle: "Entrar a la consola", signupTitle: "Crear cuenta", login: "Entrar", signup: "Registrarse", email: "Email", password: "Contraseña", passwordPlaceholder: "Al menos 6 caracteres", helper: "Tras entrar puedes usar chat AI, API Keys, validación, uso y facturación.", emailAuthLabel: "Email / registro", oauthDivider: "O continúa con una cuenta externa", googleLogin: "Continuar con Google", githubLogin: "Continuar con GitHub", googlePending: "Google Login está en configuración. Usa el acceso por email por ahora.", githubPending: "GitHub Login está en configuración. Usa el acceso por email por ahora.", submitting: "Procesando...", loginRequiredChat: "Inicia sesión para continuar el chat AI. Conservaremos tu pregunta." },
+    overview: { title: "Resumen de plataforma", balance: "Saldo", apiKeys: "API Keys", todayRequests: "Solicitudes hoy", models: "Modelos" },
+    chat: { title: "Consola de Chat AI", desc: "Envía solicitudes reales con tu API Key, saldo y modelos activos.", missingKey: "No tienes API Key. Crea una primero.", createKey: "Crear API Key", emptyTitle: "Listo para chatear", inputLabel: "Pregunta al modelo", send: "Enviar", sending: "Enviando...", settings: "Ajustes" },
+  }),
+  fr: mergeDashboardCopyFromEnglish({
+    languageLabel: "Langue",
+    functionNav: "Navigation",
+    dashboardNav: "Console",
+    closeNav: "Fermer",
+    consoleLabel: "Console",
+    consoleTitle: "Console de gestion API",
+    consoleDesc: "Gérez API Keys, chat AI, validation, modèles, usage et facturation.",
+    signedInUser: "Utilisateur connecté",
+    logout: "Déconnexion",
+    loadingData: "Chargement des données Supabase...",
+    tabs: { overview: "Vue d’ensemble", chat: "Chat AI", keys: "API Key", playground: "Validation API", models: "Modèles", usage: "Usage", recharge: "Recharge", orders: "Historique", docs: "Docs API", admin: "Admin" },
+    auth: { loginTitle: "Connexion console", signupTitle: "Créer un compte", login: "Connexion", signup: "Inscription", email: "Email", password: "Mot de passe", passwordPlaceholder: "Au moins 6 caractères", helper: "Après connexion, vous pouvez gérer chat AI, API Keys, validation, usage et facturation.", submitting: "Traitement...", loginRequiredChat: "Connectez-vous pour continuer le chat AI. Votre question sera conservée." },
+    overview: { title: "Vue d’ensemble", balance: "Solde", apiKeys: "API Keys", todayRequests: "Requêtes du jour", models: "Modèles" },
+    chat: { title: "Console Chat AI", desc: "Envoyez des requêtes avec votre API Key, votre solde et les modèles actifs.", missingKey: "Aucune API Key. Créez-en une d’abord.", createKey: "Créer API Key", emptyTitle: "Prêt pour le chat AI", inputLabel: "Question au modèle", send: "Envoyer", sending: "Envoi...", settings: "Paramètres" },
+  }),
+  de: mergeDashboardCopyFromEnglish({
+    languageLabel: "Sprache",
+    functionNav: "Navigation",
+    dashboardNav: "Konsole",
+    closeNav: "Schließen",
+    consoleLabel: "Konsole",
+    consoleTitle: "API-Verwaltungskonsole",
+    consoleDesc: "API Keys, AI Chat, Validierung, Modelle, Nutzung und Abrechnung verwalten.",
+    signedInUser: "Angemeldeter Nutzer",
+    logout: "Abmelden",
+    loadingData: "Supabase-Daten werden geladen...",
+    tabs: { overview: "Übersicht", chat: "AI Chat", keys: "API Key", playground: "API-Validierung", models: "Modelle", usage: "Nutzung", recharge: "Aufladen", orders: "Aufladungen", docs: "API-Doku", admin: "Admin" },
+    auth: { loginTitle: "In Konsole anmelden", signupTitle: "Konto erstellen", login: "Anmelden", signup: "Registrieren", email: "E-Mail", password: "Passwort", passwordPlaceholder: "Mindestens 6 Zeichen", helper: "Nach Anmeldung können Sie AI Chat, API Keys, Validierung, Nutzung und Abrechnung verwalten.", submitting: "Wird verarbeitet...", loginRequiredChat: "Bitte anmelden, um AI Chat fortzusetzen. Ihre Frage bleibt erhalten." },
+    overview: { title: "Plattformübersicht", balance: "Saldo", apiKeys: "API Keys", todayRequests: "Anfragen heute", models: "Modelle" },
+    chat: { title: "AI Chat Konsole", desc: "Senden Sie echte Chat-Anfragen mit API Key, Saldo und aktivierten Modellen.", missingKey: "Noch kein API Key. Bitte zuerst erstellen.", createKey: "API Key erstellen", emptyTitle: "Bereit für AI Chat", inputLabel: "Modell fragen", send: "Senden", sending: "Senden...", settings: "Einstellungen" },
+  }),
+  pt: mergeDashboardCopyFromEnglish({
+    languageLabel: "Idioma",
+    functionNav: "Navegação",
+    dashboardNav: "Console",
+    closeNav: "Fechar",
+    consoleLabel: "Console",
+    consoleTitle: "Console de gestão API",
+    consoleDesc: "Gerencie API Keys, chat AI, validação, modelos, uso e cobrança.",
+    signedInUser: "Usuário conectado",
+    logout: "Sair",
+    loadingData: "Carregando dados do Supabase...",
+    tabs: { overview: "Visão geral", chat: "Chat AI", keys: "API Key", playground: "Validação API", models: "Modelos", usage: "Uso", recharge: "Recarga", orders: "Registros", docs: "Docs API", admin: "Admin" },
+    auth: { loginTitle: "Entrar no console", signupTitle: "Criar conta", login: "Entrar", signup: "Cadastrar", email: "Email", password: "Senha", passwordPlaceholder: "Pelo menos 6 caracteres", helper: "Após entrar, gerencie chat AI, API Keys, validação, uso e cobrança.", submitting: "Processando...", loginRequiredChat: "Entre para continuar o chat AI. Sua pergunta será mantida." },
+    overview: { title: "Visão geral", balance: "Saldo", apiKeys: "API Keys", todayRequests: "Solicitações hoje", models: "Modelos" },
+    chat: { title: "Console de Chat AI", desc: "Envie solicitações reais com sua API Key, saldo e modelos ativos.", missingKey: "Você ainda não tem API Key. Crie uma primeiro.", createKey: "Criar API Key", emptyTitle: "Pronto para chat AI", inputLabel: "Perguntar ao modelo", send: "Enviar", sending: "Enviando...", settings: "Configurações" },
+  }),
+  ru: mergeDashboardCopyFromEnglish({
+    languageLabel: "Язык",
+    functionNav: "Навигация",
+    dashboardNav: "Консоль",
+    closeNav: "Закрыть",
+    consoleLabel: "Консоль",
+    consoleTitle: "Консоль управления API",
+    consoleDesc: "Управляйте API Keys, AI-чатом, тестами, моделями, использованием и биллингом.",
+    signedInUser: "Пользователь",
+    logout: "Выйти",
+    loadingData: "Загрузка данных Supabase...",
+    tabs: { overview: "Обзор", chat: "AI-чат", keys: "API Key", playground: "Тест", models: "Модели", usage: "Использование", recharge: "Пополнение", orders: "Записи", docs: "API-доки", admin: "Админ" },
+    auth: { loginTitle: "Войти в консоль", signupTitle: "Создать аккаунт", login: "Войти", signup: "Регистрация", email: "Email", password: "Пароль", passwordPlaceholder: "Минимум 6 символов", helper: "После входа доступны AI-чат, API Keys, тесты, использование и биллинг.", submitting: "Обработка...", loginRequiredChat: "Войдите, чтобы продолжить AI-чат. Вопрос будет сохранен." },
+    overview: { title: "Обзор платформы", balance: "Баланс", apiKeys: "API Keys", todayRequests: "Запросы сегодня", models: "Модели" },
+    chat: { title: "Консоль AI-чата", desc: "Отправляйте реальные запросы с API Key, балансом и активными моделями.", missingKey: "API Key нет. Сначала создайте ключ.", createKey: "Создать API Key", emptyTitle: "Готово к AI-чату", inputLabel: "Вопрос модели", send: "Отправить", sending: "Отправка...", settings: "Настройки" },
+  }),
+  ar: mergeDashboardCopyFromEnglish({
+    languageLabel: "اللغة",
+    functionNav: "التنقل",
+    dashboardNav: "لوحة التحكم",
+    closeNav: "إغلاق",
+    consoleLabel: "لوحة التحكم",
+    consoleTitle: "لوحة إدارة API",
+    consoleDesc: "إدارة مفاتيح API ودردشة AI والاختبار والنماذج والاستخدام والفوترة.",
+    signedInUser: "مستخدم مسجل",
+    logout: "تسجيل الخروج",
+    loadingData: "جارٍ تحميل بيانات Supabase...",
+    tabs: { overview: "نظرة عامة", chat: "دردشة AI", keys: "API Key", playground: "اختبار", models: "النماذج", usage: "الاستخدام", recharge: "الشحن", orders: "السجلات", docs: "وثائق API", admin: "الإدارة" },
+    auth: { loginTitle: "تسجيل الدخول للوحة التحكم", signupTitle: "إنشاء حساب", login: "تسجيل الدخول", signup: "تسجيل", email: "البريد", password: "كلمة المرور", passwordPlaceholder: "6 أحرف على الأقل", helper: "بعد الدخول يمكنك استخدام دردشة AI ومفاتيح API والاختبار والاستخدام والفوترة.", submitting: "جارٍ المعالجة...", loginRequiredChat: "سجّل الدخول لمتابعة دردشة AI. سيتم حفظ سؤالك." },
+    overview: { title: "نظرة عامة", balance: "الرصيد", apiKeys: "مفاتيح API", todayRequests: "طلبات اليوم", models: "النماذج" },
+    chat: { title: "لوحة دردشة AI", desc: "أرسل طلبات حقيقية باستخدام API Key والرصيد والنماذج المفعلة.", missingKey: "لا يوجد API Key. أنشئ واحداً أولاً.", createKey: "إنشاء API Key", emptyTitle: "جاهز لدردشة AI", inputLabel: "اسأل النموذج", send: "إرسال", sending: "جارٍ الإرسال...", settings: "الإعدادات" },
+  }),
+};
 
 type ChatMessage = {
   id: string;
@@ -112,18 +681,37 @@ type UsageItem = {
   status: string;
 };
 
-type OrderStatus = "pending" | "submitted" | "paid" | "rejected" | string;
+type OrderStatus = "pending" | "submitted" | "paid" | "rejected" | "canceled" | string;
+type ManualRechargePaymentMethod = "alipay_manual" | "wechat_manual";
+type RechargePaymentMethod = ManualRechargePaymentMethod | "paypal" | "stripe";
+type AdminRechargePaymentFilter = "all" | "stripe" | "paypal" | "alipay_manual" | "wechat_manual" | "manual";
+type AdminRechargeStatusFilter = "pending_submitted" | "all" | "pending" | "submitted" | "paid" | "rejected" | "failed" | "canceled";
 
 type OrderItem = {
   id: string;
   time: string;
   amount: number;
   method: string;
+  paymentMethod: string;
   status: OrderStatus;
   note: string;
+  reviewNote: string;
   paidAt: string | null;
   paypalOrderId: string | null;
   paypalCaptureId: string | null;
+  stripeSessionId: string | null;
+  stripePaymentIntentId: string | null;
+  amountUsd: number | null;
+  amountCny: number | null;
+  exchangeRate: number | null;
+  currency: string | null;
+};
+
+type ManualRechargeFormState = {
+  note: string;
+  message: string;
+  submitting: boolean;
+  createdOrder: OrderItem | null;
 };
 
 type ProfileRow = {
@@ -147,12 +735,20 @@ type OrderRow = {
   user_id?: string | null;
   amount: number | string | null;
   method: string | null;
+  payment_method?: string | null;
   status: string | null;
   note: string | null;
+  review_note?: string | null;
   created_at: string;
   paid_at?: string | null;
   paypal_order_id?: string | null;
   paypal_capture_id?: string | null;
+  stripe_session_id?: string | null;
+  stripe_payment_intent_id?: string | null;
+  amount_usd?: number | string | null;
+  amount_cny?: number | string | null;
+  exchange_rate?: number | string | null;
+  currency?: string | null;
 };
 
 type UsageLogRow = {
@@ -180,12 +776,20 @@ type RechargeOrderResult = {
   user_id: string;
   amount: number | string;
   method: string;
+  payment_method?: string | null;
   status: OrderStatus;
   note: string | null;
+  review_note?: string | null;
   created_at: string;
   paid_at: string | null;
   paypal_order_id?: string | null;
   paypal_capture_id?: string | null;
+  stripe_session_id?: string | null;
+  stripe_payment_intent_id?: string | null;
+  amount_usd?: number | string | null;
+  amount_cny?: number | string | null;
+  exchange_rate?: number | string | null;
+  currency?: string | null;
 };
 
 type ModelRow = {
@@ -274,9 +878,12 @@ type AdminUserRoleFilter = "all" | "admin" | "user";
 type AdminUserSort = "balance_desc" | "balance_asc" | "last_usage_desc" | "last_usage_asc";
 type AdminUserDetailView = "apiKeys" | "usage" | "orders";
 type BalanceAdjustMode = "increase" | "decrease";
-type FinanceRange = "today" | "7d" | "30d" | "all";
+type FinanceRange = "today" | "week" | "month" | "all";
 type ErrorRange = "today" | "7d" | "30d" | "all";
 type ErrorStatusFilter = "all" | "failed" | "blocked" | "rate_limited";
+type ModelDirectoryFilter<T extends string> = T | "all";
+type DashboardOrderStatusFilter = "all" | OrderStatus;
+type DashboardPaymentFilter = "all" | "stripe" | "paypal" | "alipay_manual" | "wechat_manual" | "manual";
 
 type AdminUserRow = {
   user_id: string;
@@ -325,12 +932,21 @@ type AdminUserOrderRow = {
   id: string;
   amount: number | string | null;
   method: string | null;
+  payment_method?: string | null;
   status: string | null;
   note: string | null;
+  review_note?: string | null;
   created_at: string;
   paid_at?: string | null;
+  reviewed_at?: string | null;
   paypal_order_id?: string | null;
   paypal_capture_id?: string | null;
+  stripe_session_id?: string | null;
+  stripe_payment_intent_id?: string | null;
+  amount_usd?: number | string | null;
+  amount_cny?: number | string | null;
+  exchange_rate?: number | string | null;
+  currency?: string | null;
 };
 
 type AdminRechargeOrderRow = {
@@ -339,12 +955,22 @@ type AdminRechargeOrderRow = {
   user_email: string | null;
   amount: number | string | null;
   method: string | null;
+  payment_method?: string | null;
   status: OrderStatus;
   note: string | null;
+  review_note?: string | null;
   created_at: string;
   paid_at: string | null;
+  reviewed_at?: string | null;
   paypal_order_id?: string | null;
   paypal_capture_id?: string | null;
+  stripe_session_id?: string | null;
+  stripe_payment_intent_id?: string | null;
+  amount_usd?: number | string | null;
+  amount_cny?: number | string | null;
+  exchange_rate?: number | string | null;
+  currency?: string | null;
+  webhook_event_id?: string | null;
 };
 
 type FinanceSummaryRow = {
@@ -352,7 +978,12 @@ type FinanceSummaryRow = {
   total_balance: number | string | null;
   total_recharge_amount: number | string | null;
   total_consumption_amount: number | string | null;
+  today_recharge_amount: number | string | null;
   today_consumption_amount: number | string | null;
+  week_recharge_amount: number | string | null;
+  week_consumption_amount: number | string | null;
+  month_recharge_amount: number | string | null;
+  month_consumption_amount: number | string | null;
   today_call_count: number | string | null;
   today_failed_count: number | string | null;
   today_failure_rate: number | string | null;
@@ -368,7 +999,7 @@ type FinanceSummaryRow = {
 };
 
 type FinanceRankingRow = {
-  ranking_type: "top_spenders" | "top_rechargers" | "model_rankings" | "supplier_rankings";
+  ranking_type: "top_spenders" | "top_rechargers" | "model_rankings" | "supplier_rankings" | "payment_method_stats";
   label: string | null;
   email: string | null;
   model: string | null;
@@ -387,9 +1018,15 @@ type RecentFinanceOrderRow = {
   user_email: string | null;
   amount: number | string | null;
   method: string | null;
+  payment_method?: string | null;
   status: string | null;
   note: string | null;
+  review_note?: string | null;
   created_at: string;
+  amount_usd?: number | string | null;
+  amount_cny?: number | string | null;
+  exchange_rate?: number | string | null;
+  currency?: string | null;
 };
 
 type ErrorSummaryRow = {
@@ -438,6 +1075,26 @@ type ErrorLogRow = {
   request_id: string | null;
   ip_hash: string | null;
   user_agent_hash: string | null;
+};
+
+type ModelDirectoryItem = {
+  id: string;
+  name: string;
+  upstreamModel: string;
+  displayName: string;
+  series: ModelSeriesId;
+  provider: ModelProviderId;
+  providerName: string;
+  supplierName: string;
+  description: string;
+  capabilities: ModelCapability[];
+  tags: ModelPlatformTag[];
+  inputPrice: string;
+  outputPrice: string;
+  contextLength: string;
+  connected: boolean;
+  enabled: boolean;
+  source: "database" | "catalog" | "merged";
 };
 
 const API_KEY_PREFIX_LENGTH = 16;
@@ -499,36 +1156,46 @@ const fallbackModelList: ModelItem[] = [
 
 const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "overview", label: "概览", icon: <Gauge className="h-4 w-4" /> },
-  { key: "keys", label: "API Key", icon: <KeyRound className="h-4 w-4" /> },
-  { key: "playground", label: "在线测试", icon: <Play className="h-4 w-4" /> },
   { key: "chat", label: "AI 聊天", icon: <MessageSquare className="h-4 w-4" /> },
+  { key: "keys", label: "API Key", icon: <KeyRound className="h-4 w-4" /> },
+  { key: "playground", label: "接口调试", icon: <Play className="h-4 w-4" /> },
   { key: "models", label: "模型列表", icon: <Database className="h-4 w-4" /> },
   { key: "usage", label: "用量记录", icon: <Activity className="h-4 w-4" /> },
   { key: "recharge", label: "充值中心", icon: <CreditCard className="h-4 w-4" /> },
-  { key: "orders", label: "订单记录", icon: <FileText className="h-4 w-4" /> },
+  { key: "orders", label: "充值记录", icon: <FileText className="h-4 w-4" /> },
   { key: "docs", label: "API 文档", icon: <BookOpen className="h-4 w-4" /> },
   { key: "admin", label: "管理后台", icon: <Settings className="h-4 w-4" /> },
 ];
 
 const dashboardNavItems: DashboardNavItem[] = [
   { label: "概览", id: "overview", tab: "overview" },
-  { label: "API Key", id: "api-keys", tab: "keys" },
-  { label: "在线测试", id: "playground", tab: "playground" },
   { label: "AI 聊天", id: "chat", tab: "chat" },
+  { label: "API Key", id: "api-keys", tab: "keys" },
+  { label: "接口调试", id: "playground", tab: "playground" },
   { label: "模型列表", id: "models", tab: "models" },
   { label: "用量记录", id: "usage-logs", tab: "usage" },
   { label: "充值中心", id: "recharge", tab: "recharge" },
-  { label: "订单记录", id: "orders", tab: "orders" },
+  { label: "充值记录", id: "orders", tab: "orders" },
   { label: "API 文档", id: "docs", tab: "docs" },
   { label: "管理后台", id: "admin", tab: "admin", adminOnly: true },
   { label: "模型价格管理", id: "model-pricing", tab: "admin", adminOnly: true },
   { label: "供应商线路", id: "suppliers", tab: "admin", adminOnly: true },
-  { label: "充值审核", id: "recharge-review", tab: "admin", adminOnly: true },
+  { label: "充值审核/记录", id: "recharge-review", tab: "admin", adminOnly: true },
   { label: "用户管理", id: "users", tab: "admin", adminOnly: true },
   { label: "财务统计", id: "finance", tab: "admin", adminOnly: true },
   { label: "异常请求", id: "errors", tab: "admin", adminOnly: true },
   { label: "系统监控", id: "monitoring", tab: "admin", adminOnly: true },
 ];
+
+const adminNavCopyKeys: Record<string, keyof DashboardCopy["adminNav"]> = {
+  "model-pricing": "modelPricing",
+  suppliers: "suppliers",
+  "recharge-review": "rechargeReview",
+  users: "users",
+  finance: "finance",
+  errors: "errors",
+  monitoring: "monitoring",
+};
 
 const activeSectionIdByTab: Record<Tab, string> = {
   overview: "overview",
@@ -544,7 +1211,99 @@ const activeSectionIdByTab: Record<Tab, string> = {
 };
 
 const rechargeAmountOptions = [10, 30, 50, 100];
-const paypalAmountOptions = [5, 10, 20, 50];
+const manualRechargePaymentOptions: Array<{
+  key: ManualRechargePaymentMethod;
+  title: string;
+  label: string;
+  desc: string;
+  qrSrc: string;
+}> = [
+  {
+    key: "alipay_manual",
+    title: "支付宝手动转账",
+    label: "支付宝",
+    desc: "人工审核，付款后请等待管理员确认。",
+    qrSrc: "/alipay-qr.png",
+  },
+  {
+    key: "wechat_manual",
+    title: "微信手动转账",
+    label: "微信",
+    desc: "人工审核，付款后请等待管理员确认。",
+    qrSrc: "/wechat-qr.png",
+  },
+];
+const rechargePaymentOptions: Array<{
+  key: RechargePaymentMethod;
+  label: string;
+  title: string;
+  desc: string;
+  badge?: string;
+  disabled?: boolean;
+}> = [
+  {
+    key: "wechat_manual",
+    label: "微信支付",
+    title: "微信支付",
+    desc: "扫码转账，提交后等待管理员审核。",
+  },
+  {
+    key: "alipay_manual",
+    label: "支付宝",
+    title: "支付宝",
+    desc: "扫码转账，提交后等待管理员审核。",
+  },
+  {
+    key: "paypal",
+    label: "PayPal",
+    title: "PayPal",
+    desc: "美元支付，按汇率折算人民币到账。",
+  },
+  {
+    key: "stripe",
+    label: "Stripe",
+    title: "Stripe 支付",
+    desc: "银行卡支付正在开通审核中，暂不接受正式充值。",
+    badge: "审核中",
+    disabled: true,
+  },
+];
+const stripePendingMessage = "Stripe 支付正在开通中，请暂时使用 PayPal、微信或支付宝充值。";
+const adminRechargePaymentFilters: Array<{ value: AdminRechargePaymentFilter; label: string }> = [
+  { value: "all", label: "全部" },
+  { value: "stripe", label: "Stripe" },
+  { value: "paypal", label: "PayPal" },
+  { value: "alipay_manual", label: "支付宝" },
+  { value: "wechat_manual", label: "微信" },
+  { value: "manual", label: "手动" },
+];
+const adminRechargeStatusFilters: Array<{ value: AdminRechargeStatusFilter; label: string }> = [
+  { value: "all", label: "全部状态" },
+  { value: "pending_submitted", label: "待审核" },
+  { value: "pending", label: "待支付" },
+  { value: "submitted", label: "已提交" },
+  { value: "paid", label: "已通过" },
+  { value: "rejected", label: "已拒绝" },
+  { value: "failed", label: "支付失败" },
+  { value: "canceled", label: "已取消" },
+];
+
+function createManualRechargeForms(): Record<ManualRechargePaymentMethod, ManualRechargeFormState> {
+  return {
+    alipay_manual: {
+      note: "",
+      message: "",
+      submitting: false,
+      createdOrder: null,
+    },
+    wechat_manual: {
+      note: "",
+      message: "",
+      submitting: false,
+      createdOrder: null,
+    },
+  };
+}
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString("zh-CN", {
@@ -553,6 +1312,33 @@ function formatDateTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function isToday(value: string | null | undefined) {
+  if (!value) {
+    return false;
+  }
+
+  const target = new Date(value);
+  const now = new Date();
+
+  return (
+    target.getFullYear() === now.getFullYear() &&
+    target.getMonth() === now.getMonth() &&
+    target.getDate() === now.getDate()
+  );
+}
+
+function formatCompactId(value: string | null | undefined, head = 8, tail = 6) {
+  if (!value) {
+    return "无";
+  }
+
+  if (value.length <= head + tail + 3) {
+    return value;
+  }
+
+  return `${value.slice(0, head)}...${value.slice(-tail)}`;
 }
 
 function createLiveApiKey() {
@@ -591,16 +1377,26 @@ function mapChatApiKey(row: ChatApiKeyRow): ChatApiKeyItem {
 }
 
 function mapOrder(row: OrderRow): OrderItem {
+  const paymentMethod = row.payment_method ?? row.method ?? "未知";
+
   return {
     id: row.id,
     time: formatDateTime(row.created_at),
     amount: Number(row.amount ?? 0),
-    method: row.method ?? "未知",
+    method: row.method ?? paymentMethod,
+    paymentMethod,
     status: row.status ?? "pending",
     note: row.note ?? "",
+    reviewNote: row.review_note ?? "",
     paidAt: row.paid_at ?? null,
     paypalOrderId: row.paypal_order_id ?? null,
     paypalCaptureId: row.paypal_capture_id ?? null,
+    stripeSessionId: row.stripe_session_id ?? null,
+    stripePaymentIntentId: row.stripe_payment_intent_id ?? null,
+    amountUsd: row.amount_usd == null ? null : Number(row.amount_usd),
+    amountCny: row.amount_cny == null ? null : Number(row.amount_cny),
+    exchangeRate: row.exchange_rate == null ? null : Number(row.exchange_rate),
+    currency: row.currency ?? null,
   };
 }
 
@@ -666,6 +1462,130 @@ function getErrorStatusClass(status: string | null | undefined) {
   }
 
   return "border-rose-300/30 bg-rose-400/10 text-rose-100";
+}
+
+function uniqueValues<T extends string>(values: T[]) {
+  return Array.from(new Set(values));
+}
+
+function inferProviderId(model: Pick<ModelItem, "name" | "provider" | "supplierName">): ModelProviderId {
+  return resolveModelProviderId(model.provider, model.supplierName, model.name);
+}
+
+function inferSeriesId(model: Pick<ModelItem, "name" | "upstreamModel" | "label" | "provider" | "supplierName" | "desc">, catalogModel?: CatalogModel): ModelSeriesId {
+  return catalogModel?.series ?? resolveModelSeriesId(model.name, model.upstreamModel, model.label, model.provider, model.supplierName, model.desc);
+}
+
+function catalogMatchesModel(catalogModel: CatalogModel, model: Pick<ModelItem, "name" | "upstreamModel">) {
+  const modelName = model.name.toLowerCase();
+  const upstreamModel = model.upstreamModel.toLowerCase();
+
+  return (
+    catalogModel.name.toLowerCase() === modelName ||
+    catalogModel.id.toLowerCase() === modelName ||
+    catalogModel.name.toLowerCase() === upstreamModel ||
+    catalogModel.id.toLowerCase() === upstreamModel
+  );
+}
+
+function findCatalogModel(model: Pick<ModelItem, "name" | "upstreamModel">) {
+  return modelCatalog.find((catalogModel) => catalogMatchesModel(catalogModel, model));
+}
+
+function inferCapabilities(model: ModelItem, catalogModel?: CatalogModel): ModelCapability[] {
+  if (catalogModel?.capabilities.length) {
+    return catalogModel.capabilities;
+  }
+
+  const source = `${model.name} ${model.label} ${model.desc}`.toLowerCase();
+  const capabilities: ModelCapability[] = [];
+
+  if (source.includes("embedding") || source.includes("embed")) capabilities.push("embedding");
+  if (source.includes("rerank")) capabilities.push("rerank");
+  if (source.includes("image") || source.includes("图像") || source.includes("vision")) capabilities.push("image");
+  if (source.includes("video") || source.includes("视频")) capabilities.push("video");
+  if (source.includes("audio") || source.includes("音频") || source.includes("voice")) capabilities.push("audio");
+  if (source.includes("multimodal") || source.includes("多模态") || source.includes("vision")) capabilities.push("multimodal");
+  if (source.includes("code") || source.includes("代码")) capabilities.push("code");
+
+  capabilities.push("text");
+  return uniqueValues(capabilities);
+}
+
+function inferPlatformTags(model: ModelItem, connected: boolean, catalogModel?: CatalogModel, seriesId?: ModelSeriesId): ModelPlatformTag[] {
+  const seriesTags = seriesId ? getSeriesById(seriesId).defaultTags : [];
+  const tags = [...seriesTags, ...(catalogModel?.tags ?? [])];
+
+  if (connected) {
+    tags.push("connected");
+  }
+
+  if (model.sortOrder <= 10) {
+    tags.push("featured");
+  }
+
+  if (model.sortOrder <= 30) {
+    tags.push("recommended");
+  }
+
+  if (model.inputPricePer1K > 0 && model.inputPricePer1K <= 0.01) {
+    tags.push("discount");
+  }
+
+  return uniqueValues(tags.length ? tags : ["recommended"]).filter((tag) => connected || tag !== "connected");
+}
+
+function toDirectoryModel(model: ModelItem, catalogModel?: CatalogModel): ModelDirectoryItem {
+  const series = inferSeriesId(model, catalogModel);
+  const seriesMeta = getSeriesById(series);
+  const provider = catalogModel?.provider ?? seriesMeta.provider ?? inferProviderId(model);
+  const providerMeta = getProviderById(provider);
+  const connected = Boolean(model.enabled);
+
+  return {
+    id: catalogModel?.id ?? model.name,
+    name: model.name,
+    upstreamModel: model.upstreamModel,
+    displayName: model.label,
+    series,
+    provider,
+    providerName: catalogModel?.providerName ?? providerMeta.name,
+    supplierName: model.supplierName,
+    description: model.desc,
+    capabilities: inferCapabilities(model, catalogModel),
+    tags: inferPlatformTags(model, connected, catalogModel, series),
+    inputPrice: model.inputPrice,
+    outputPrice: model.outputPrice,
+    contextLength: catalogModel?.contextLength ?? "未标注",
+    connected,
+    enabled: model.enabled,
+    source: catalogModel ? "merged" : "database",
+  };
+}
+
+function catalogOnlyToDirectoryModel(model: CatalogModel): ModelDirectoryItem {
+  const tags = model.tags.filter((tag) => tag !== "connected");
+  const series = model.series ?? resolveModelSeriesId(model.name, model.displayName, model.providerName, model.description);
+
+  return {
+    id: model.id,
+    name: model.name,
+    upstreamModel: model.name,
+    displayName: model.displayName,
+    series,
+    provider: model.provider,
+    providerName: model.providerName,
+    supplierName: model.provider,
+    description: model.description,
+    capabilities: model.capabilities,
+    tags,
+    inputPrice: model.inputPrice ?? "按供应商定价",
+    outputPrice: model.outputPrice ?? "按供应商定价",
+    contextLength: model.contextLength ?? "未标注",
+    connected: false,
+    enabled: false,
+    source: "catalog",
+  };
 }
 
 function mapModel(row: ModelRow): ModelItem {
@@ -834,25 +1754,79 @@ function formatOrderMethod(method: string | null | undefined) {
   }
 
   if (method === "manual") {
-    return "人工充值";
+    return "手动转账";
+  }
+
+  if (method === "alipay_manual") {
+    return "支付宝";
+  }
+
+  if (method === "wechat_manual") {
+    return "微信";
   }
 
   if (method === "paypal") {
-    return "PayPal Sandbox";
+    return "PayPal";
+  }
+
+  if (method === "stripe") {
+    return "Stripe";
   }
 
   return method || "未知";
 }
 
-function formatOrderAmount(amount: number | string | null | undefined, method: string | null | undefined) {
+function isUsdPaymentMethod(method: string | null | undefined) {
+  return method === "paypal" || method === "stripe";
+}
+
+function formatOrderPaymentAmount(
+  amount: number | string | null | undefined,
+  method: string | null | undefined,
+  amountUsd?: number | string | null
+) {
   const value = Number(amount ?? 0);
-  const normalized = Number.isFinite(value) ? value : 0;
-  const prefix = method === "paypal" ? "$" : "¥";
+  const usdValue = Number(amountUsd ?? amount ?? 0);
+  const normalized = Number.isFinite(isUsdPaymentMethod(method) ? usdValue : value)
+    ? isUsdPaymentMethod(method)
+      ? usdValue
+      : value
+    : 0;
+  const prefix = isUsdPaymentMethod(method) ? "$" : "￥";
 
   return `${prefix}${normalized.toFixed(2)}`;
 }
 
+function formatOrderCreditAmount(
+  amount: number | string | null | undefined,
+  method: string | null | undefined,
+  amountCny?: number | string | null
+) {
+  const value = Number(isUsdPaymentMethod(method) ? amountCny ?? amount : amount);
+  const normalized = Number.isFinite(value) ? value : 0;
+
+  return `￥${normalized.toFixed(2)}`;
+}
+
+function formatExchangeRate(method: string | null | undefined, exchangeRate?: number | string | null) {
+  if (!isUsdPaymentMethod(method)) {
+    return "-";
+  }
+
+  const rate = Number(exchangeRate ?? 0);
+
+  return Number.isFinite(rate) && rate > 0 ? `1 USD = ${rate.toFixed(2)} CNY` : "待记录";
+}
+
+function isValidRechargeAmount(amount: number) {
+  return Number.isFinite(amount) && amount > 0 && amount <= 50000 && Math.round(amount * 100) / 100 === amount;
+}
+
 function getErrorMessage(error: unknown) {
+  if (typeof error === "string") {
+    return error;
+  }
+
   if (error instanceof Error) {
     return error.message;
   }
@@ -862,6 +1836,33 @@ function getErrorMessage(error: unknown) {
   }
 
   return "未知错误";
+}
+
+function getAuthErrorMessage(error: unknown) {
+  const message = getErrorMessage(error);
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes("invalid login credentials")) {
+    return "邮箱或密码错误，请检查后重试。";
+  }
+
+  if (normalized.includes("email not confirmed")) {
+    return "邮箱尚未完成验证，请先打开邮箱确认邮件后再登录。";
+  }
+
+  if (normalized.includes("user already registered") || normalized.includes("already registered")) {
+    return "该邮箱已注册，请直接登录。";
+  }
+
+  if (normalized.includes("signup") && normalized.includes("disabled")) {
+    return "当前暂未开放注册，请联系管理员。";
+  }
+
+  if (normalized.includes("provider") || normalized.includes("oauth") || normalized.includes("unsupported")) {
+    return "第三方登录暂不可用，请确认 Google/GitHub 登录已在 Supabase 后台配置，或暂时使用邮箱登录。";
+  }
+
+  return message || "登录失败，请稍后重试。";
 }
 
 function isAdminPermissionError(error: unknown) {
@@ -924,10 +1925,10 @@ function SectionTitle({
   desc?: string;
 }) {
   return (
-    <div className="mb-6">
-      <p className="text-sm font-semibold text-cyan-300">{label}</p>
-      <h2 className="mt-2 text-2xl font-black sm:text-3xl">{title}</h2>
-      {desc ? <p className="mt-3 text-slate-400">{desc}</p> : null}
+    <div className="mb-6 border-b border-slate-200 pb-5">
+      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600">{label}</p>
+      <h2 className="mt-2 text-2xl font-semibold tracking-normal text-slate-950 sm:text-3xl">{title}</h2>
+      {desc ? <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-600 sm:text-base">{desc}</p> : null}
     </div>
   );
 }
@@ -937,7 +1938,7 @@ function BrandMark({ className = "" }: { className?: string }) {
 
   return (
     <span className={`flex items-center gap-2 ${className}`}>
-      <span className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-cyan-300/25 bg-cyan-300/10 shadow-[0_0_18px_rgba(34,211,238,0.16)]">
+      <span className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md border border-cyan-300/25 bg-cyan-300/10">
         {logoFailed ? (
           <span className="text-lg leading-none">⚡</span>
         ) : (
@@ -951,24 +1952,68 @@ function BrandMark({ className = "" }: { className?: string }) {
           />
         )}
       </span>
-      <span className="text-lg font-bold">电鳗 eelapi</span>
+      <span className="text-base font-semibold tracking-normal">电鳗 eelapi</span>
     </span>
+  );
+}
+
+function isLanguageCode(value: string | null): value is LanguageCode {
+  return languages.some((language) => language.code === value);
+}
+
+function readStoredLanguage(): LanguageCode {
+  if (typeof window === "undefined") {
+    return defaultLanguage;
+  }
+
+  const storedLanguage = window.localStorage.getItem(languageStorageKey);
+  return isLanguageCode(storedLanguage) ? storedLanguage : defaultLanguage;
+}
+
+function DashboardLanguageSwitcher({
+  language,
+  copy,
+  onChange,
+}: {
+  language: LanguageCode;
+  copy: DashboardCopy;
+  onChange: (language: LanguageCode) => void;
+}) {
+  return (
+    <label className="flex h-9 shrink-0 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 shadow-sm">
+      <Globe2 className="h-4 w-4 text-blue-500" />
+      <span className="sr-only">{copy.languageLabel}</span>
+      <select
+        value={language}
+        onChange={(event) => onChange(event.target.value as LanguageCode)}
+        aria-label={copy.languageLabel}
+        className="max-w-36 bg-transparent text-sm outline-none"
+      >
+        {languages.map((item) => (
+          <option key={item.code} value={item.code} className="bg-white text-slate-950">
+            {item.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
 export default function EasyApiHubPage() {
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatMessagesEndRef = useRef<HTMLDivElement | null>(null);
+  const chatModelPickerRef = useRef<HTMLDivElement | null>(null);
   const paypalReturnHandledRef = useRef(false);
+  const [appLanguage, setAppLanguage] = useState<LanguageCode>(() => readStoredLanguage());
   const [page, setPage] = useState<Page>("home");
   const [dashboardTab, setDashboardTab] = useState<Tab>("overview");
-  const [menuOpen, setMenuOpen] = useState(false);
   const [functionNavOpen, setFunctionNavOpen] = useState(false);
   const [dashboardScrollTarget, setDashboardScrollTarget] = useState("");
   const [loginOpen, setLoginOpen] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(Boolean(supabase));
   const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [oauthSubmittingProvider, setOauthSubmittingProvider] = useState<OAuthProvider | "">("");
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [authMessage, setAuthMessage] = useState("");
   const [dataLoading, setDataLoading] = useState(false);
@@ -986,12 +2031,19 @@ export default function EasyApiHubPage() {
   const [showKeys, setShowKeys] = useState(false);
   const [copiedText, setCopiedText] = useState("");
   const [selectedModel, setSelectedModel] = useState("deepseek-chat");
-  const [testPrompt, setTestPrompt] = useState("你好，帮我写一个 API 中转站介绍");
-  const [testResult, setTestResult] = useState(
-    "这里会显示模型回复。当前是本地演示版，不会真的请求上游 API。"
+  const [modelSearch, setModelSearch] = useState("");
+  const [modelSeriesFilter, setModelSeriesFilter] = useState<ModelDirectoryFilter<ModelSeriesId>>("all");
+  const [modelCapabilityFilters, setModelCapabilityFilters] = useState<ModelCapability[]>([]);
+  const [modelTagFilters, setModelTagFilters] = useState<ModelPlatformTag[]>([]);
+  const [previewPrompt, setPreviewPrompt] = useState("你好，帮我写一个 AI API 聚合平台介绍");
+  const [previewResult, setPreviewResult] = useState(
+    "这里会显示模型响应或接口预览结果。"
   );
   const [chatModel, setChatModel] = useState("deepseek-chat");
+  const [chatModelSearch, setChatModelSearch] = useState("");
+  const [chatModelPickerOpen, setChatModelPickerOpen] = useState(false);
   const [chatInput, setChatInput] = useState("你好");
+  const [pendingChatPrompt, setPendingChatPrompt] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState("");
@@ -1003,20 +2055,29 @@ export default function EasyApiHubPage() {
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
   const [usageLogs, setUsageLogs] = useState<UsageItem[]>([]);
   const [orders, setOrders] = useState<OrderItem[]>([]);
+  const [manualRechargeForms, setManualRechargeForms] = useState(createManualRechargeForms);
   const [rechargeAmountChoice, setRechargeAmountChoice] = useState("30");
   const [customRechargeAmount, setCustomRechargeAmount] = useState("");
-  const [rechargeNote, setRechargeNote] = useState("");
+  const [selectedRechargePaymentMethod, setSelectedRechargePaymentMethod] =
+    useState<RechargePaymentMethod>("wechat_manual");
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [rechargeMessage, setRechargeMessage] = useState("");
-  const [rechargeSubmitting, setRechargeSubmitting] = useState(false);
-  const [createdRechargeOrder, setCreatedRechargeOrder] = useState<OrderItem | null>(null);
+  const [manualQrStatus, setManualQrStatus] = useState<Record<"alipay_manual" | "wechat_manual", "unknown" | "loaded" | "missing">>({
+    alipay_manual: "unknown",
+    wechat_manual: "unknown",
+  });
   const [orderMessage, setOrderMessage] = useState("");
   const [submittingPaymentOrderId, setSubmittingPaymentOrderId] = useState("");
-  const [paypalAmountChoice, setPaypalAmountChoice] = useState("10");
-  const [customPaypalAmount, setCustomPaypalAmount] = useState("");
+  const [orderStatusFilter, setOrderStatusFilter] = useState<DashboardOrderStatusFilter>("all");
+  const [orderPaymentFilter, setOrderPaymentFilter] = useState<DashboardPaymentFilter>("all");
+  const [orderSearch, setOrderSearch] = useState("");
+  const [selectedOrder, setSelectedOrder] = useState<OrderItem | null>(null);
   const [paypalMessage, setPaypalMessage] = useState("");
   const [paypalSubmitting, setPaypalSubmitting] = useState(false);
   const [paypalCapturing, setPaypalCapturing] = useState(false);
   const [paypalReturnOrderId, setPaypalReturnOrderId] = useState("");
+  const [paypalExchangeRate, setPaypalExchangeRate] = useState(7.2);
+  const [stripeMessage, setStripeMessage] = useState("");
   const [modelList, setModelList] = useState<ModelItem[]>(fallbackModelList);
   const [adminModels, setAdminModels] = useState<ModelItem[]>([]);
   const [adminSuppliers, setAdminSuppliers] = useState<SupplierItem[]>([]);
@@ -1026,6 +2087,14 @@ export default function EasyApiHubPage() {
   const [adminRechargeOrders, setAdminRechargeOrders] = useState<AdminRechargeOrderRow[]>([]);
   const [adminRechargeLoading, setAdminRechargeLoading] = useState(false);
   const [adminRechargeMessage, setAdminRechargeMessage] = useState("");
+  const [adminRechargeMethodFilter, setAdminRechargeMethodFilter] = useState<AdminRechargePaymentFilter>("all");
+  const [adminRechargeStatusFilter, setAdminRechargeStatusFilter] =
+    useState<AdminRechargeStatusFilter>("pending_submitted");
+  const [adminRechargeOrderSearch, setAdminRechargeOrderSearch] = useState("");
+  const [adminRechargeEmailSearch, setAdminRechargeEmailSearch] = useState("");
+  const [adminRechargeNoteSearch, setAdminRechargeNoteSearch] = useState("");
+  const [selectedAdminRechargeOrder, setSelectedAdminRechargeOrder] = useState<AdminRechargeOrderRow | null>(null);
+  const [reviewNoteByOrderId, setReviewNoteByOrderId] = useState<Record<string, string>>({});
   const [reviewingRechargeOrderId, setReviewingRechargeOrderId] = useState("");
   const [userSearch, setUserSearch] = useState("");
   const [userRoleFilter, setUserRoleFilter] = useState<AdminUserRoleFilter>("all");
@@ -1044,6 +2113,9 @@ export default function EasyApiHubPage() {
   const [balanceAdjustSubmitting, setBalanceAdjustSubmitting] = useState(false);
   const [financeRange, setFinanceRange] = useState<FinanceRange>("today");
   const [financeSummary, setFinanceSummary] = useState<FinanceSummaryRow | null>(null);
+  const [adminOverviewSummary, setAdminOverviewSummary] = useState<FinanceSummaryRow | null>(null);
+  const [adminOverviewPendingRechargeCount, setAdminOverviewPendingRechargeCount] = useState(0);
+  const [adminOverviewLoading, setAdminOverviewLoading] = useState(false);
   const [financeRankings, setFinanceRankings] = useState<FinanceRankingRow[]>([]);
   const [recentFinanceOrders, setRecentFinanceOrders] = useState<RecentFinanceOrderRow[]>([]);
   const [financeLoading, setFinanceLoading] = useState(false);
@@ -1071,7 +2143,6 @@ export default function EasyApiHubPage() {
   const [editingSupplierId, setEditingSupplierId] = useState("");
   const [supplierSubmitting, setSupplierSubmitting] = useState(false);
   const [adminSupplierMessage, setAdminSupplierMessage] = useState("");
-
   const activeKey = apiKeys[0] ? `${apiKeys[0].keyPrefix}...` : "你的_API_Key";
   const userEmail = session?.user.email ?? email;
   const isAdmin = profileRole === "admin";
@@ -1079,18 +2150,404 @@ export default function EasyApiHubPage() {
   const activeDashboardTab = !isAdmin && dashboardTab === "admin" ? "overview" : dashboardTab;
   const selectedRechargeAmount =
     rechargeAmountChoice === "custom" ? Number(customRechargeAmount) : Number(rechargeAmountChoice);
-  const selectedPaypalAmount = paypalAmountChoice === "custom" ? Number(customPaypalAmount) : Number(paypalAmountChoice);
+  const selectedRechargePaymentOption =
+    rechargePaymentOptions.find((option) => option.key === selectedRechargePaymentMethod) ?? rechargePaymentOptions[0];
+  const activeManualPaymentMethod: ManualRechargePaymentMethod | null =
+    selectedRechargePaymentMethod === "alipay_manual" || selectedRechargePaymentMethod === "wechat_manual"
+      ? selectedRechargePaymentMethod
+      : null;
+  const activeManualRechargeForm = activeManualPaymentMethod ? manualRechargeForms[activeManualPaymentMethod] : null;
+  const activeManualRechargeOption = activeManualPaymentMethod
+    ? manualRechargePaymentOptions.find((option) => option.key === activeManualPaymentMethod) ?? null
+    : null;
+  const selectedPaypalAmount =
+    Number.isFinite(selectedRechargeAmount) && selectedRechargeAmount > 0 && paypalExchangeRate > 0
+      ? Math.max(Math.round((selectedRechargeAmount / paypalExchangeRate) * 100) / 100, 0.01)
+      : 0;
+  const estimatedPaypalCny =
+    Number.isFinite(selectedPaypalAmount) && selectedPaypalAmount > 0 ? selectedPaypalAmount * paypalExchangeRate : 0;
   const selectedModelInfo =
     modelList.find((model) => model.name === selectedModel) ?? modelList[0] ?? fallbackModelList[0];
   const selectedModelName = selectedModelInfo.name;
+  const modelDirectoryItems = useMemo(() => {
+    const usedModelNames = new Set<string>();
+    const catalogItems = modelCatalog.map((catalogModel) => {
+      const matchedModel = modelList.find((model) => catalogMatchesModel(catalogModel, model));
+
+      if (matchedModel) {
+        usedModelNames.add(matchedModel.name.toLowerCase());
+        return toDirectoryModel(matchedModel, catalogModel);
+      }
+
+      return catalogOnlyToDirectoryModel(catalogModel);
+    });
+    const databaseOnlyItems = modelList
+      .filter((model) => !usedModelNames.has(model.name.toLowerCase()))
+      .map((model) => toDirectoryModel(model));
+    const seriesOrder = new Map(modelSeriesList.map((series, index) => [series.id, index]));
+
+    return [...catalogItems, ...databaseOnlyItems].sort((left, right) => {
+      if (left.connected !== right.connected) {
+        return left.connected ? -1 : 1;
+      }
+
+      return (
+        (seriesOrder.get(left.series) ?? 999) - (seriesOrder.get(right.series) ?? 999) ||
+        left.displayName.localeCompare(right.displayName, "zh-CN")
+      );
+    });
+  }, [modelList]);
+  const modelSeriesCounts = useMemo(() => {
+    return modelSeriesList.reduce<Record<ModelSeriesId, number>>((counts, series) => {
+      counts[series.id] = modelDirectoryItems.filter((model) => model.series === series.id).length;
+      return counts;
+    }, {} as Record<ModelSeriesId, number>);
+  }, [modelDirectoryItems]);
+  const filteredModelDirectoryItems = useMemo(() => {
+    const query = modelSearch.trim().toLowerCase();
+
+    return modelDirectoryItems.filter((model) => {
+      const seriesMeta = getSeriesById(model.series);
+      const queryMatched =
+        !query ||
+        [
+          model.name,
+          model.upstreamModel,
+          model.displayName,
+          seriesMeta.name,
+          seriesMeta.providerName,
+          model.providerName,
+          model.supplierName,
+          model.description,
+          ...model.capabilities.map((capability) => capabilityLabels[capability]),
+          ...model.tags.map((tag) => platformTagLabels[tag]),
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(query);
+      const seriesMatched = modelSeriesFilter === "all" || model.series === modelSeriesFilter;
+      const capabilityMatched =
+        modelCapabilityFilters.length === 0 ||
+        modelCapabilityFilters.every((capability) => model.capabilities.includes(capability));
+      const tagMatched =
+        modelTagFilters.length === 0 ||
+        modelTagFilters.every((tag) => model.tags.includes(tag));
+
+      return queryMatched && seriesMatched && capabilityMatched && tagMatched;
+    });
+  }, [modelCapabilityFilters, modelDirectoryItems, modelSearch, modelSeriesFilter, modelTagFilters]);
+  const connectedModelCount = modelDirectoryItems.filter((model) => model.connected).length;
+  const modelDirectoryHasActiveFilters =
+    modelSearch.trim() !== "" ||
+    modelSeriesFilter !== "all" ||
+    modelCapabilityFilters.length > 0 ||
+    modelTagFilters.length > 0;
+  const toggleModelCapabilityFilter = (capability: ModelCapability) => {
+    setModelCapabilityFilters((current) =>
+      current.includes(capability)
+        ? current.filter((item) => item !== capability)
+        : [...current, capability]
+    );
+  };
+  const toggleModelTagFilter = (tag: ModelPlatformTag) => {
+    setModelTagFilters((current) =>
+      current.includes(tag)
+        ? current.filter((item) => item !== tag)
+        : [...current, tag]
+    );
+  };
   const chatAvailableModels = useMemo(
     () => (isSupabaseConfigured && !modelsMessage ? modelList : []),
     [modelList, modelsMessage]
   );
   const chatModelInfo = chatAvailableModels.find((model) => model.name === chatModel) ?? chatAvailableModels[0] ?? null;
+  const chatModelOptions = useMemo(() => {
+    const seriesOrder = new Map(modelSeriesList.map((series, index) => [series.id, index]));
+
+    return chatAvailableModels
+      .map((model) => toDirectoryModel(model, findCatalogModel(model)))
+      .sort((left, right) => {
+        if (left.enabled !== right.enabled) {
+          return left.enabled ? -1 : 1;
+        }
+
+        if (left.connected !== right.connected) {
+          return left.connected ? -1 : 1;
+        }
+
+        return (
+          (seriesOrder.get(left.series) ?? 999) - (seriesOrder.get(right.series) ?? 999) ||
+          left.displayName.localeCompare(right.displayName, "zh-CN")
+        );
+      });
+  }, [chatAvailableModels]);
+  const selectedChatModelOption =
+    chatModelOptions.find((model) => model.name === (chatModelInfo?.name ?? chatModel)) ?? chatModelOptions[0] ?? null;
+  const filteredChatModelOptions = useMemo(() => {
+    const query = chatModelSearch.trim().toLowerCase();
+
+    if (!query) {
+      return chatModelOptions;
+    }
+
+    return chatModelOptions.filter((model) => {
+      const seriesMeta = getSeriesById(model.series);
+      const searchText = [
+        model.displayName,
+        model.name,
+        model.upstreamModel,
+        model.providerName,
+        model.supplierName,
+        seriesMeta.name,
+        seriesMeta.providerName,
+        model.description,
+        ...model.capabilities.map((capability) => capabilityLabels[capability]),
+        ...model.capabilities.map((capability) => compactCapabilityLabels[capability]),
+        ...model.tags.map((tag) => platformTagLabels[tag]),
+        ...model.tags.map((tag) => compactPlatformTagLabels[tag]),
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return searchText.includes(query);
+    });
+  }, [chatModelOptions, chatModelSearch]);
+  useEffect(() => {
+    if (!chatModelPickerOpen) {
+      return;
+    }
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!chatModelPickerRef.current?.contains(event.target as Node)) {
+        setChatModelPickerOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setChatModelPickerOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [chatModelPickerOpen]);
+  const selectedChatModelIcon = selectedChatModelOption
+    ? resolveModelIcon({
+        seriesId: selectedChatModelOption.series,
+        name: selectedChatModelOption.name,
+        displayName: selectedChatModelOption.displayName,
+        providerName: selectedChatModelOption.providerName,
+        provider: selectedChatModelOption.provider,
+        supplierName: selectedChatModelOption.supplierName,
+        upstreamModel: selectedChatModelOption.upstreamModel,
+        description: selectedChatModelOption.description,
+      })
+    : null;
+  const selectedChatModelSeries = selectedChatModelOption ? getSeriesById(selectedChatModelOption.series) : null;
   const activeChatApiKey = chatApiKeys.find((key) => key.id === selectedChatApiKeyId) ?? chatApiKeys[0] ?? null;
   const apiBaseUrl = "https://eelapi.com/api/v1";
   const exampleModel = "deepseek-chat";
+  const dashboardLanguage: LanguageCode = "zh";
+  const dashboardCopy = dashboardCopies[dashboardLanguage] ?? dashboardCopyZh;
+  const languageMeta = getLanguageMeta(appLanguage);
+  const dashboardUiText =
+    dashboardLanguage === "zh"
+      ? {
+          enabled: "正常",
+          input: "输入",
+          output: "输出",
+          noEnabledModels: "暂无启用模型，请联系管理员在模型价格管理里启用。",
+          noUsage: "还没有用量记录。接入真实 API 中转后，这里会显示 usage_logs 数据。",
+          usageHeaders: ["时间", "模型", "供应商", "输入", "输出", "费用", "状态"],
+          rechargeStepAmount: "选择金额",
+          rechargeAmount: "充值金额",
+          customAmount: "自定义人民币金额",
+          customAmountPlaceholder: "输入其他人民币金额",
+          rechargeStepPayment: "选择支付方式",
+          rechargeStepConfirm: "确认支付",
+          paymentMethod: "支付方式",
+          creditMethod: "到账方式",
+          confirmPayment: "确认支付",
+          confirming: "确认中...",
+          confirmPaypal: "确认 PayPal 到账",
+          manualCredit: "提交审核后，管理员确认到账",
+          ordersHeaders: ["订单号", "金额", "支付方式", "订单状态", "创建时间", "到账时间", "审核/订单备注", "操作"],
+          copiedOrderId: "订单号已复制",
+          copyOrderId: "复制完整订单号",
+          reviewNote: "审核",
+          orderNote: "订单",
+          none: "无",
+          submitting: "提交中...",
+          paidSubmit: "我已付款",
+          noOrders: "还没有充值记录。创建充值订单后，这里会显示审核进度。",
+          modelName: "模型名",
+          endpoint: "接口",
+          docsNotice:
+            "model 必须使用平台支持并启用的模型名，例如 deepseek-chat。不同模型的输入和输出价格可能不同，实际扣费按上游返回的 usage 计算。",
+          jsExample: "JavaScript fetch 示例",
+          pythonExample: "Python OpenAI SDK 示例",
+          copy: "复制",
+          errorCodes: "常见错误码",
+          copiedJs: "已复制 JavaScript 示例",
+          copiedPython: "已复制 Python 示例",
+        }
+      : {
+          enabled: "Enabled",
+          input: "Input",
+          output: "Output",
+          noEnabledModels: "No enabled models. Ask an admin to enable one in model pricing.",
+          noUsage: "No usage records yet. API gateway usage_logs data will appear here after real calls.",
+          usageHeaders: ["Time", "Model", "Supplier", "Input", "Output", "Cost", "Status"],
+          rechargeStepAmount: "Choose amount",
+          rechargeAmount: "Top-up amount",
+          customAmount: "Custom CNY amount",
+          customAmountPlaceholder: "Enter another CNY amount",
+          rechargeStepPayment: "Choose payment method",
+          rechargeStepConfirm: "Confirm payment",
+          paymentMethod: "Payment method",
+          creditMethod: "Balance credit",
+          confirmPayment: "Confirm payment",
+          confirming: "Confirming...",
+          confirmPaypal: "Confirm PayPal credit",
+          manualCredit: "After review, an admin confirms the balance credit.",
+          ordersHeaders: ["Order ID", "Amount", "Payment", "Status", "Created", "Paid at", "Review / order note", "Action"],
+          copiedOrderId: "Order ID copied",
+          copyOrderId: "Copy full order ID",
+          reviewNote: "Review",
+          orderNote: "Order",
+          none: "None",
+          submitting: "Submitting...",
+          paidSubmit: "I have paid",
+          noOrders: "No top-up records yet. Review progress appears here after creating an order.",
+          modelName: "Model name",
+          endpoint: "Endpoint",
+          docsNotice:
+            "The model field must use a supported and enabled model name, for example deepseek-chat. Prices may differ by model, and actual charges are calculated from upstream usage.",
+          jsExample: "JavaScript fetch example",
+          pythonExample: "Python OpenAI SDK example",
+          copy: "Copy",
+          errorCodes: "Common error codes",
+          copiedJs: "JavaScript example copied",
+          copiedPython: "Python example copied",
+        };
+
+  function setDashboardLanguage(nextLanguage: LanguageCode) {
+    setAppLanguage(nextLanguage);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(languageStorageKey, nextLanguage);
+      window.dispatchEvent(new CustomEvent(languageChangeEventName, { detail: nextLanguage }));
+    }
+  }
+
+  function getDashboardNavLabel(item: DashboardNavItem) {
+    const adminCopyKey = adminNavCopyKeys[item.id];
+
+    if (adminCopyKey) {
+      return dashboardCopy.adminNav[adminCopyKey];
+    }
+
+    return dashboardCopy.tabs[item.tab] ?? item.label;
+  }
+
+  function normalizeChatPrompt(prompt: string) {
+    return prompt.trim();
+  }
+
+  function writeChatUrl(prompt: string, mode: ChatNavigationHistoryMode, requireLogin = false) {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    params.set("tab", "chat");
+    if (prompt) {
+      params.set("question", prompt);
+    } else {
+      params.delete("question");
+    }
+    if (requireLogin) {
+      params.set("auth", "login");
+    } else {
+      params.delete("auth");
+    }
+
+    const nextQuery = params.toString();
+    const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+    const historyMethod = mode === "replace" ? "replaceState" : "pushState";
+    window.history[historyMethod](null, "", nextUrl);
+  }
+
+  function rememberPendingChatPrompt(prompt: string) {
+    const cleanedPrompt = normalizeChatPrompt(prompt);
+    setPendingChatPrompt(cleanedPrompt);
+
+    if (typeof window !== "undefined" && cleanedPrompt) {
+      window.sessionStorage.setItem(pendingChatPromptStorageKey, cleanedPrompt);
+    }
+  }
+
+  function readPendingChatPrompt() {
+    if (pendingChatPrompt) {
+      return pendingChatPrompt;
+    }
+
+    if (typeof window === "undefined") {
+      return "";
+    }
+
+    return window.sessionStorage.getItem(pendingChatPromptStorageKey) ?? "";
+  }
+
+  function clearPendingChatPrompt() {
+    setPendingChatPrompt("");
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(pendingChatPromptStorageKey);
+    }
+  }
+
+  function openChatWithPrompt(prompt: string, mode: ChatNavigationHistoryMode = "push") {
+    const cleanedPrompt = normalizeChatPrompt(prompt);
+    setChatInput(cleanedPrompt || "你好");
+    setChatError("");
+    setPage("dashboard");
+    setDashboardTab("chat");
+    setDashboardScrollTarget("chat");
+    writeChatUrl(cleanedPrompt, mode, false);
+  }
+
+  function openPendingChatAfterAuth() {
+    const prompt = readPendingChatPrompt();
+    if (!prompt) {
+      return false;
+    }
+
+    clearPendingChatPrompt();
+    openChatWithPrompt(prompt, "replace");
+    return true;
+  }
+
+  function requestAiChat(prompt: string) {
+    const cleanedPrompt = normalizeChatPrompt(prompt) || "你好";
+    setChatInput(cleanedPrompt);
+
+    if (authLoading || !session) {
+      rememberPendingChatPrompt(cleanedPrompt);
+      setAuthMode("login");
+      setAuthMessage(dashboardCopy.auth.loginRequiredChat);
+      setLoginOpen(true);
+      writeChatUrl(cleanedPrompt, "push", true);
+      return;
+    }
+
+    clearPendingChatPrompt();
+    openChatWithPrompt(cleanedPrompt);
+  }
+
   const supplierOptions =
     adminSuppliers.length > 0
       ? adminSuppliers
@@ -1105,14 +2562,20 @@ export default function EasyApiHubPage() {
   const topRechargers = financeRankings.filter((item) => item.ranking_type === "top_rechargers");
   const modelFinanceRankings = financeRankings.filter((item) => item.ranking_type === "model_rankings");
   const supplierFinanceRankings = financeRankings.filter((item) => item.ranking_type === "supplier_rankings");
+  const paymentMethodFinanceRankings = financeRankings.filter((item) => item.ranking_type === "payment_method_stats");
   const financeRangeLabel =
-    financeRange === "today" ? "今天" : financeRange === "7d" ? "7 天" : financeRange === "30d" ? "30 天" : "全部";
+    financeRange === "today" ? "今天" : financeRange === "week" ? "本周" : financeRange === "month" ? "本月" : "全部";
   const financeStatCards = [
     ["总用户数", formatNumber(financeSummary?.total_users), "profiles"],
     ["总余额池", formatMoney(financeSummary?.total_balance, 4), "sum(balance)"],
     ["累计充值金额", formatMoney(financeSummary?.total_recharge_amount, 2), "paid/manual/admin_adjust"],
     ["累计消费金额", formatMoney(financeSummary?.total_consumption_amount, 4), "usage cost"],
+    ["今日充值金额", formatMoney(financeSummary?.today_recharge_amount, 2), "today paid"],
     ["今日消费金额", formatMoney(financeSummary?.today_consumption_amount, 4), "today"],
+    ["本周充值金额", formatMoney(financeSummary?.week_recharge_amount, 2), "week paid"],
+    ["本周消费金额", formatMoney(financeSummary?.week_consumption_amount, 4), "week usage"],
+    ["本月充值金额", formatMoney(financeSummary?.month_recharge_amount, 2), "month paid"],
+    ["本月消费金额", formatMoney(financeSummary?.month_consumption_amount, 4), "month usage"],
     ["今日调用次数", formatNumber(financeSummary?.today_call_count), "calls"],
     ["今日失败次数", formatNumber(financeSummary?.today_failed_count), "failed"],
     ["失败率", formatPercent(financeSummary?.today_failure_rate), "today"],
@@ -1166,6 +2629,70 @@ export default function EasyApiHubPage() {
       ? `今日 401 较多，可能存在无效 Key 探测或客户端密钥配置错误。`
       : "",
   ].filter(Boolean);
+  const adminRechargeVisibleOrders = useMemo(() => {
+    const noteQuery = adminRechargeNoteSearch.trim().toLowerCase();
+
+    if (!noteQuery) {
+      return adminRechargeOrders;
+    }
+
+    return adminRechargeOrders.filter((order) => {
+      const haystack = [
+        order.note,
+        order.review_note,
+        order.paypal_order_id,
+        order.paypal_capture_id,
+        order.stripe_session_id,
+        order.stripe_payment_intent_id,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(noteQuery);
+    });
+  }, [adminRechargeNoteSearch, adminRechargeOrders]);
+  const filteredOrders = useMemo(() => {
+    const query = orderSearch.trim().toLowerCase();
+
+    return orders.filter((order) => {
+        const paymentMethod = order.paymentMethod || order.method;
+        const methodMatched =
+          orderPaymentFilter === "all" ||
+          paymentMethod === orderPaymentFilter ||
+          (orderPaymentFilter === "manual" && ["manual", "manual_transfer"].includes(paymentMethod));
+        const statusMatched = orderStatusFilter === "all" || order.status === orderStatusFilter;
+        const queryMatched =
+          !query ||
+          [
+            order.id,
+            order.note,
+            order.reviewNote,
+            order.paypalOrderId,
+            order.paypalCaptureId,
+            order.stripeSessionId,
+            order.stripePaymentIntentId,
+            paymentMethod,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase()
+            .includes(query);
+
+        return methodMatched && statusMatched && queryMatched;
+      });
+  }, [orderPaymentFilter, orderSearch, orderStatusFilter, orders]);
+  const todayNewUserCount = adminUsers.filter((user) => isToday(user.createdAt)).length;
+  const adminOverviewCards = [
+    ["用户总数", formatNumber(adminOverviewSummary?.total_users ?? adminUsers.length), "profiles"],
+    ["今日新增用户", formatNumber(todayNewUserCount), "按注册时间统计"],
+    ["待审核充值订单", formatNumber(adminOverviewPendingRechargeCount), "pending/submitted"],
+    ["今日充值金额", formatMoney(adminOverviewSummary?.today_recharge_amount, 2), "今日 paid"],
+    ["总充值金额", formatMoney(adminOverviewSummary?.total_recharge_amount, 2), "累计 paid/manual/admin_adjust"],
+    ["今日请求数", formatNumber(adminOverviewSummary?.today_call_count), "usage_logs"],
+    ["总请求数", formatNumber(adminOverviewSummary?.range_call_count), "全部调用"],
+    ["启用模型数", formatNumber(adminModels.filter((model) => model.enabled).length || modelList.length), "models.enabled"],
+  ];
 
   const pythonCode = useMemo(() => {
     return `from openai import OpenAI
@@ -1205,20 +2732,27 @@ print(completion.choices[0].message.content)`;
     setBalance(0);
     setApiKeys([]);
     setOrders([]);
+    setManualRechargeForms(createManualRechargeForms());
     setRechargeAmountChoice("30");
     setCustomRechargeAmount("");
-    setRechargeNote("");
+    setSelectedRechargePaymentMethod("wechat_manual");
+    setPaymentDialogOpen(false);
     setRechargeMessage("");
-    setRechargeSubmitting(false);
-    setCreatedRechargeOrder(null);
+    setManualQrStatus({
+      alipay_manual: "unknown",
+      wechat_manual: "unknown",
+    });
     setOrderMessage("");
     setSubmittingPaymentOrderId("");
-    setPaypalAmountChoice("10");
-    setCustomPaypalAmount("");
+    setOrderStatusFilter("all");
+    setOrderPaymentFilter("all");
+    setOrderSearch("");
+    setSelectedOrder(null);
     setPaypalMessage("");
     setPaypalSubmitting(false);
     setPaypalCapturing(false);
     setPaypalReturnOrderId("");
+    setPaypalExchangeRate(7.2);
     setUsageLogs([]);
     setCreatedApiKey("");
     setDataMessage("");
@@ -1227,6 +2761,10 @@ print(completion.choices[0].message.content)`;
     setManualRechargeAmount("");
     setManualRechargeNote("");
     setManualRechargeMessage("");
+    setModelSearch("");
+    setModelSeriesFilter("all");
+    setModelCapabilityFilters([]);
+    setModelTagFilters([]);
     setAdminModels([]);
     setAdminSuppliers([]);
     setAdminUsers([]);
@@ -1235,6 +2773,13 @@ print(completion.choices[0].message.content)`;
     setAdminRechargeOrders([]);
     setAdminRechargeLoading(false);
     setAdminRechargeMessage("");
+    setAdminRechargeMethodFilter("all");
+    setAdminRechargeStatusFilter("pending_submitted");
+    setAdminRechargeOrderSearch("");
+    setAdminRechargeEmailSearch("");
+    setAdminRechargeNoteSearch("");
+    setSelectedAdminRechargeOrder(null);
+    setReviewNoteByOrderId({});
     setReviewingRechargeOrderId("");
     setUserSearch("");
     setUserRoleFilter("all");
@@ -1253,6 +2798,9 @@ print(completion.choices[0].message.content)`;
     setBalanceAdjustSubmitting(false);
     setFinanceRange("today");
     setFinanceSummary(null);
+    setAdminOverviewSummary(null);
+    setAdminOverviewPendingRechargeCount(0);
+    setAdminOverviewLoading(false);
     setFinanceRankings([]);
     setRecentFinanceOrders([]);
     setFinanceLoading(false);
@@ -1428,7 +2976,13 @@ print(completion.choices[0].message.content)`;
     setAdminRechargeMessage("");
 
     try {
-      const { data, error } = await supabase.rpc("list_recharge_orders_admin");
+      const { data, error } = await supabase.rpc("list_recharge_orders_admin", {
+        payment_method_filter: adminRechargeMethodFilter,
+        status_filter: adminRechargeStatusFilter,
+        search_order: adminRechargeOrderSearch.trim() || null,
+        search_email: adminRechargeEmailSearch.trim() || null,
+        limit_count: 300,
+      });
 
       if (error) {
         throw error;
@@ -1440,6 +2994,50 @@ print(completion.choices[0].message.content)`;
       setAdminRechargeMessage("充值审核订单读取失败，请确认充值审核 RPC 已执行。");
     } finally {
       setAdminRechargeLoading(false);
+    }
+  }, [adminRechargeEmailSearch, adminRechargeMethodFilter, adminRechargeOrderSearch, adminRechargeStatusFilter]);
+
+  const loadAdminOverview = useCallback(async () => {
+    if (!supabase) {
+      setAdminOverviewSummary(null);
+      setAdminOverviewPendingRechargeCount(0);
+      return;
+    }
+
+    setAdminOverviewLoading(true);
+
+    try {
+      const [summaryResult, pendingOrdersResult] = await Promise.all([
+        supabase.rpc("get_finance_summary_admin", {
+          range_filter: "all",
+        }),
+        supabase.rpc("list_recharge_orders_admin", {
+          payment_method_filter: "all",
+          status_filter: "pending_submitted",
+          search_order: null,
+          search_email: null,
+          limit_count: 300,
+        }),
+      ]);
+
+      const firstError = summaryResult.error ?? pendingOrdersResult.error;
+
+      if (firstError) {
+        throw firstError;
+      }
+
+      const summaryData = Array.isArray(summaryResult.data)
+        ? (summaryResult.data[0] as FinanceSummaryRow | undefined)
+        : (summaryResult.data as FinanceSummaryRow | null);
+
+      setAdminOverviewSummary(summaryData ?? null);
+      setAdminOverviewPendingRechargeCount((pendingOrdersResult.data ?? []).length);
+    } catch (error) {
+      console.error(error);
+      setAdminOverviewSummary(null);
+      setAdminOverviewPendingRechargeCount(0);
+    } finally {
+      setAdminOverviewLoading(false);
     }
   }, []);
 
@@ -1587,7 +3185,7 @@ print(completion.choices[0].message.content)`;
             .order("created_at", { ascending: false }),
           supabase
             .from("orders")
-            .select("id,user_id,amount,method,status,note,created_at,paid_at,paypal_order_id,paypal_capture_id")
+            .select("id,user_id,amount,method,payment_method,status,note,review_note,created_at,paid_at,paypal_order_id,paypal_capture_id,stripe_session_id,stripe_payment_intent_id,amount_usd,amount_cny,exchange_rate,currency")
             .eq("user_id", userId)
             .order("created_at", { ascending: false }),
           supabase
@@ -1669,6 +3267,22 @@ print(completion.choices[0].message.content)`;
     }
   }, [session]);
 
+  const loadPaypalExchangeRate = useCallback(async () => {
+    try {
+      const response = await fetch("/api/payments/paypal/rate");
+      const data = (await response.json()) as {
+        exchange_rate?: number | string | null;
+      };
+      const rate = Number(data.exchange_rate);
+
+      if (response.ok && Number.isFinite(rate) && rate > 0) {
+        setPaypalExchangeRate(rate);
+      }
+    } catch (error) {
+      console.error("Failed to load PayPal exchange rate", error);
+    }
+  }, []);
+
   const capturePaypalOrder = useCallback(
     async (paypalOrderId: string, autoCapture = false) => {
       if (!session) {
@@ -1720,7 +3334,7 @@ print(completion.choices[0].message.content)`;
   const cancelPaypalOrder = useCallback(
     async (paypalOrderId: string) => {
       if (!session) {
-        setPaypalMessage("PayPal 支付已取消。登录状态恢复后，可在订单记录中查看订单。");
+        setPaypalMessage("PayPal 支付已取消。登录状态恢复后，可在充值记录中查看订单。");
         return;
       }
 
@@ -1788,6 +3402,46 @@ print(completion.choices[0].message.content)`;
 
     return () => window.clearTimeout(timer);
   }, [loadChatApiKeys]);
+
+  useEffect(() => {
+    document.documentElement.lang = appLanguage === "zh" ? "zh-CN" : appLanguage;
+    document.documentElement.dir = languageMeta.dir;
+  }, [appLanguage, languageMeta.dir]);
+
+  useEffect(() => {
+    const syncLanguage = (nextLanguage: string | null) => {
+      if (isLanguageCode(nextLanguage)) {
+        setAppLanguage(nextLanguage);
+      }
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === languageStorageKey) {
+        syncLanguage(event.newValue);
+      }
+    };
+
+    const handleLanguageChange = (event: Event) => {
+      syncLanguage((event as CustomEvent<string>).detail);
+    };
+
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener(languageChangeEventName, handleLanguageChange);
+    syncLanguage(window.localStorage.getItem(languageStorageKey));
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(languageChangeEventName, handleLanguageChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadPaypalExchangeRate();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadPaypalExchangeRate]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1862,10 +3516,173 @@ print(completion.choices[0].message.content)`;
   }, [cancelPaypalOrder, capturePaypalOrder, session]);
 
   useEffect(() => {
+    const timer = window.setTimeout(async () => {
+      const params = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/u, ""));
+      const authIntent = params.get("auth");
+      const oauthError = params.get("error_description") ?? params.get("error") ?? hashParams.get("error_description") ?? hashParams.get("error");
+      const hasOAuthCallback =
+        authIntent === "callback" ||
+        params.has("code") ||
+        hashParams.has("access_token") ||
+        hashParams.has("refresh_token");
+
+      if (authIntent !== "login" && authIntent !== "signup" && !hasOAuthCallback && !oauthError) {
+        return;
+      }
+
+      if (authLoading) {
+        return;
+      }
+
+      const clearAuthParams = () => {
+        [
+          "auth",
+          "code",
+          "error",
+          "error_code",
+          "error_description",
+          "provider",
+          "next",
+        ].forEach((key) => params.delete(key));
+        const nextQuery = params.toString();
+        const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+        window.history.replaceState(null, "", nextUrl);
+      };
+
+      if (oauthError) {
+        setAuthMode("login");
+        setAuthMessage(getAuthErrorMessage(oauthError));
+        setLoginOpen(true);
+        clearAuthParams();
+        return;
+      }
+
+      if (session) {
+        setAuthMessage("");
+        setLoginOpen(false);
+        setPage("dashboard");
+        setDashboardTab("overview");
+        setDashboardScrollTarget("overview");
+        clearAuthParams();
+        return;
+      }
+
+      const oauthCode = params.get("code");
+      if (oauthCode && supabase) {
+        setAuthMode("login");
+        setAuthMessage("正在完成第三方登录...");
+        setLoginOpen(true);
+
+        const { data, error } = await supabase.auth.exchangeCodeForSession(oauthCode);
+
+        if (error) {
+          setAuthMessage(getAuthErrorMessage(error));
+          clearAuthParams();
+          return;
+        }
+
+        if (data.session) {
+          setSession(data.session);
+          setEmail(data.session.user.email ?? "");
+          void loadDashboardData(data.session);
+          setAuthMessage("");
+          setLoginOpen(false);
+          setPage("dashboard");
+          setDashboardTab("overview");
+          setDashboardScrollTarget("overview");
+          clearAuthParams();
+          return;
+        }
+      }
+
+      if (hasOAuthCallback) {
+        setAuthMode("login");
+        setAuthMessage("第三方登录未完成，请重试或暂时使用邮箱登录。");
+        setLoginOpen(true);
+        clearAuthParams();
+        return;
+      }
+
+      setAuthMode(authIntent as "login" | "signup");
+      setAuthMessage("");
+      setLoginOpen(true);
+      clearAuthParams();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [authLoading, loadDashboardData, session]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get("tab");
+      const requestedTab = tabs.some((tab) => tab.key === tabParam) ? (tabParam as Tab) : null;
+
+      if (!requestedTab) {
+        return;
+      }
+
+      const prompt = requestedTab === "chat" ? (params.get("question") ?? "").trim() : "";
+      if (prompt) {
+        setChatInput(prompt);
+        setPendingChatPrompt(prompt);
+        window.sessionStorage.setItem(pendingChatPromptStorageKey, prompt);
+      }
+
+      if (authLoading) {
+        return;
+      }
+
+      if (!session) {
+        setAuthMode("login");
+        setAuthMessage(
+          requestedTab === "chat" ? dashboardCopy.auth.loginRequiredChat : "请先登录后继续。"
+        );
+        setLoginOpen(true);
+        return;
+      }
+
+      if (requestedTab === "chat") {
+        setPendingChatPrompt("");
+        window.sessionStorage.removeItem(pendingChatPromptStorageKey);
+        setChatError("");
+      }
+
+      setLoginOpen(false);
+      setPage("dashboard");
+      setDashboardTab(requestedTab);
+      setDashboardScrollTarget(activeSectionIdByTab[requestedTab]);
+
+      params.delete("auth");
+      params.delete("tab");
+      params.delete("question");
+      const nextQuery = params.toString();
+      const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+      window.history.replaceState(null, "", nextUrl);
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [authLoading, dashboardCopy.auth.loginRequiredChat, session]);
+
+  useEffect(() => {
     chatMessagesEndRef.current?.scrollIntoView({
       block: "end",
     });
   }, [chatLoading, chatMessages.length]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (isAdmin) {
+        void loadAdminOverview();
+      } else {
+        setAdminOverviewSummary(null);
+        setAdminOverviewPendingRechargeCount(0);
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [isAdmin, loadAdminOverview]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2006,12 +3823,21 @@ print(completion.choices[0].message.content)`;
       setLoginOpen(true);
       return;
     }
-    setMenuOpen(false);
     setPage("dashboard");
   };
 
   const navigateDashboardModule = (item: DashboardNavItem) => {
     setFunctionNavOpen(false);
+
+    if (authLoading || !session) {
+      setDashboardScrollTarget(item.id);
+      setDashboardTab(item.tab);
+      setAuthMode("login");
+      setAuthMessage("请先登录后继续。");
+      setLoginOpen(true);
+      return;
+    }
+
     setDashboardScrollTarget(item.id);
     setPage("dashboard");
     setDashboardTab(item.tab);
@@ -2020,6 +3846,58 @@ print(completion.choices[0].message.content)`;
   const closeLoginDialog = () => {
     setLoginOpen(false);
     setAuthMessage("");
+    setOauthSubmittingProvider("");
+  };
+
+  const buildAuthRedirectUrl = (provider?: OAuthProvider) => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const redirectUrl = new URL("/", window.location.origin);
+    redirectUrl.searchParams.set("auth", "callback");
+    redirectUrl.searchParams.set("next", "dashboard");
+    if (provider) {
+      redirectUrl.searchParams.set("provider", provider);
+    }
+
+    return redirectUrl.toString();
+  };
+
+  const handleOAuthSignIn = async (provider: OAuthProvider) => {
+    setAuthMessage("");
+
+    if (!isSupabaseConfigured || !supabase) {
+      setAuthMessage(dashboardCopy.auth.missingSupabase);
+      return;
+    }
+
+    if (!oauthProviderEnabled[provider]) {
+      setAuthMessage(provider === "google" ? dashboardCopy.auth.googlePending : dashboardCopy.auth.githubPending);
+      return;
+    }
+
+    setOauthSubmittingProvider(provider);
+
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo: buildAuthRedirectUrl(provider),
+        },
+      });
+
+      if (error) {
+        setAuthMessage(getAuthErrorMessage(error));
+        return;
+      }
+
+      setAuthMessage(dashboardCopy.auth.oauthRedirecting);
+    } catch (error) {
+      setAuthMessage(`${dashboardCopy.auth.oauthError} ${getErrorMessage(error)}`);
+    } finally {
+      setOauthSubmittingProvider("");
+    }
   };
 
   const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -2027,12 +3905,12 @@ print(completion.choices[0].message.content)`;
     setAuthMessage("");
 
     if (!isSupabaseConfigured || !supabase) {
-      setAuthMessage("请先在 Netlify 或本地 .env.local 中配置 Supabase URL 和 Publishable key。");
+      setAuthMessage(dashboardCopy.auth.missingSupabase);
       return;
     }
 
     if (!email.trim() || password.length < 6) {
-      setAuthMessage("请输入邮箱，并使用至少 6 位密码。");
+      setAuthMessage(dashboardCopy.auth.invalidCredentials);
       return;
     }
 
@@ -2044,13 +3922,12 @@ print(completion.choices[0].message.content)`;
           email: email.trim(),
           password,
           options: {
-            emailRedirectTo:
-              typeof window === "undefined" ? undefined : window.location.origin,
+            emailRedirectTo: buildAuthRedirectUrl(),
           },
         });
 
         if (error) {
-          setAuthMessage(error.message);
+          setAuthMessage(getAuthErrorMessage(error));
           return;
         }
 
@@ -2058,11 +3935,13 @@ print(completion.choices[0].message.content)`;
           setSession(data.session);
           void loadDashboardData(data.session);
           setLoginOpen(false);
-          setPage("dashboard");
+          if (!openPendingChatAfterAuth()) {
+            setPage("dashboard");
+          }
           return;
         }
 
-        setAuthMessage("注册成功，请先打开邮箱确认邮件，然后再登录。");
+        setAuthMessage(dashboardCopy.auth.signupConfirm);
         setAuthMode("login");
         return;
       }
@@ -2073,7 +3952,7 @@ print(completion.choices[0].message.content)`;
       });
 
       if (error) {
-        setAuthMessage(error.message);
+        setAuthMessage(getAuthErrorMessage(error));
         return;
       }
 
@@ -2081,11 +3960,13 @@ print(completion.choices[0].message.content)`;
         setSession(data.session);
         void loadDashboardData(data.session);
         setLoginOpen(false);
-        setPage("dashboard");
+        if (!openPendingChatAfterAuth()) {
+          setPage("dashboard");
+        }
         return;
       }
 
-      setAuthMessage("登录没有返回会话，请检查 Supabase 邮箱确认设置。");
+      setAuthMessage(dashboardCopy.auth.noSession);
     } finally {
       setAuthSubmitting(false);
     }
@@ -2177,8 +4058,8 @@ print(completion.choices[0].message.content)`;
     }
   };
 
-  const runTest = () => {
-    const promptTokens = Math.max(20, Math.round(testPrompt.length * 1.8));
+  const runPreview = () => {
+    const promptTokens = Math.max(20, Math.round(previewPrompt.length * 1.8));
     const completionTokens = Math.floor(120 + Math.random() * 260);
     const cost = Number(
       (
@@ -2188,8 +4069,8 @@ print(completion.choices[0].message.content)`;
     );
     const total = promptTokens + completionTokens;
 
-    setTestResult(
-      `演示回复：你的请求已通过 ${selectedModelName} 处理。\n\n这是本地模拟结果，不会请求真实 AI API，也不会写入 usage_logs。\n\nTokens：${total}\n模拟费用：¥${cost.toFixed(4)}`
+    setPreviewResult(
+      `接口预览响应：你的请求已通过 ${selectedModelName} 的调试流程处理。\n\n当前结果用于开发者控制台预览，请以正式 API 调用和用量记录为准。\n\nTokens：${total}\n预估费用：¥${cost.toFixed(4)}`
     );
   };
 
@@ -2199,22 +4080,22 @@ print(completion.choices[0].message.content)`;
     const userContent = chatInput.trim();
 
     if (!userContent) {
-      setChatError("请输入要发送的内容。");
+      setChatError(dashboardCopy.chat.emptyInput);
       return;
     }
 
     if (!session) {
-      setChatError("请先登录后再使用 AI 聊天。");
+      setChatError(dashboardCopy.chat.loginRequired);
       return;
     }
 
     if (!activeChatApiKey) {
-      setChatError("你还没有 API Key，请先到 API Key 页面创建一个。");
+      setChatError(dashboardCopy.chat.missingKeyError);
       return;
     }
 
     if (!chatModelInfo) {
-      setChatError("当前没有可用模型，请联系管理员启用模型。");
+      setChatError(dashboardCopy.chat.noModelError);
       return;
     }
 
@@ -2265,7 +4146,7 @@ print(completion.choices[0].message.content)`;
 
       if (!response.ok) {
         if (response.status === 402) {
-          throw new Error("余额不足，请先充值。");
+          throw new Error(dashboardCopy.chat.insufficientBalance);
         }
 
         throw new Error(readChatApiError(responseData, responseText || response.statusText));
@@ -2296,27 +4177,80 @@ print(completion.choices[0].message.content)`;
     }
   };
 
-  const handleCreateRechargeOrder = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const updateManualRechargeForm = (
+    paymentMethod: ManualRechargePaymentMethod,
+    patch: Partial<ManualRechargeFormState>
+  ) => {
+    setManualRechargeForms((current) => ({
+      ...current,
+      [paymentMethod]: {
+        ...current[paymentMethod],
+        ...patch,
+      },
+    }));
+  };
+
+  const openRechargePaymentDialog = () => {
     setRechargeMessage("");
-    setCreatedRechargeOrder(null);
+    setPaypalMessage("");
+    setStripeMessage("");
+
+    if (selectedRechargePaymentMethod === "stripe") {
+      setStripeMessage(stripePendingMessage);
+      return;
+    }
+
+    if (!isValidRechargeAmount(selectedRechargeAmount)) {
+      setRechargeMessage("请选择或输入大于 0 且不超过 50000 的金额，最多保留 2 位小数。");
+      return;
+    }
+
+    setPaymentDialogOpen(true);
+  };
+
+  const handleCreateRechargeOrder = async (
+    event: FormEvent<HTMLFormElement>,
+    paymentMethod: ManualRechargePaymentMethod
+  ) => {
+    event.preventDefault();
+    const rechargeForm = manualRechargeForms[paymentMethod];
+
+    setRechargeMessage("");
+    updateManualRechargeForm(paymentMethod, {
+      message: "",
+      createdOrder: null,
+    });
 
     if (!supabase || !session) {
-      setRechargeMessage("请先登录后再创建充值订单。");
+      updateManualRechargeForm(paymentMethod, {
+        message: "请先登录后再创建充值订单。",
+      });
       return;
     }
 
-    if (!Number.isFinite(selectedRechargeAmount) || selectedRechargeAmount <= 0) {
-      setRechargeMessage("请选择或输入大于 0 的充值金额。");
+    if (!isValidRechargeAmount(selectedRechargeAmount)) {
+      updateManualRechargeForm(paymentMethod, {
+        message: "请选择或输入大于 0 且不超过 50000 的金额，最多保留 2 位小数。",
+      });
       return;
     }
 
-    setRechargeSubmitting(true);
+    if (!rechargeForm.note.trim()) {
+      updateManualRechargeForm(paymentMethod, {
+        message: "请填写付款账号后四位或转账备注，方便管理员审核。",
+      });
+      return;
+    }
+
+    updateManualRechargeForm(paymentMethod, {
+      submitting: true,
+    });
 
     try {
       const { data, error } = await supabase.rpc("create_recharge_order", {
         recharge_amount: selectedRechargeAmount,
-        recharge_note: rechargeNote.trim() || null,
+        recharge_note: rechargeForm.note.trim() || null,
+        recharge_payment_method: paymentMethod,
       });
 
       if (error) {
@@ -2332,15 +4266,21 @@ print(completion.choices[0].message.content)`;
       }
 
       const createdOrder = mapOrder(result);
-      setCreatedRechargeOrder(createdOrder);
-      setRechargeMessage("订单创建成功，请完成手动转账后点击“我已付款”。");
-      setRechargeNote("");
+      updateManualRechargeForm(paymentMethod, {
+        createdOrder,
+        message: "已提交付款信息，订单进入待审核状态，请等待管理员确认。",
+        note: "",
+      });
       await loadDashboardData(session);
     } catch (error) {
       console.error(error);
-      setRechargeMessage(`订单创建失败：${getErrorMessage(error)}`);
+      updateManualRechargeForm(paymentMethod, {
+        message: `订单创建失败：${getErrorMessage(error)}`,
+      });
     } finally {
-      setRechargeSubmitting(false);
+      updateManualRechargeForm(paymentMethod, {
+        submitting: false,
+      });
     }
   };
 
@@ -2349,12 +4289,12 @@ print(completion.choices[0].message.content)`;
     setPaypalMessage("");
 
     if (!session) {
-      setPaypalMessage("请先登录后再使用 PayPal Sandbox 支付。");
+      setPaypalMessage("请先登录后再使用 PayPal 支付。");
       return;
     }
 
-    if (!Number.isFinite(selectedPaypalAmount) || selectedPaypalAmount <= 0) {
-      setPaypalMessage("请选择或输入大于 0 的 PayPal 充值金额。");
+    if (!isValidRechargeAmount(selectedRechargeAmount) || !Number.isFinite(selectedPaypalAmount) || selectedPaypalAmount <= 0) {
+      setPaypalMessage("请选择或输入大于 0 且不超过 50000 的充值金额，最多保留 2 位小数。");
       return;
     }
 
@@ -2374,6 +4314,9 @@ print(completion.choices[0].message.content)`;
       const data = (await response.json()) as {
         approve_url?: string;
         paypal_order_id?: string;
+        amount_usd?: number | string;
+        amount_cny?: number | string;
+        exchange_rate?: number | string;
         error?: {
           message?: string;
         };
@@ -2384,13 +4327,20 @@ print(completion.choices[0].message.content)`;
       }
 
       setPaypalReturnOrderId(data.paypal_order_id ?? "");
-      setPaypalMessage("PayPal 订单已创建，正在跳转到 Sandbox 支付页...");
+      setPaypalMessage(
+        `PayPal 订单已创建：支付 $${Number(data.amount_usd ?? selectedPaypalAmount).toFixed(2)}，预计到账 ￥${Number(data.amount_cny ?? estimatedPaypalCny).toFixed(2)}，汇率 1 USD = ${Number(data.exchange_rate ?? paypalExchangeRate).toFixed(2)} CNY。正在跳转到 PayPal 支付页...`
+      );
       window.location.href = data.approve_url;
     } catch (error) {
       console.error(error);
       setPaypalMessage(`PayPal 订单创建失败：${getErrorMessage(error)}`);
       setPaypalSubmitting(false);
     }
+  };
+
+  const handleCreateStripeCheckoutSession = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setStripeMessage(stripePendingMessage);
   };
 
   const submitRechargePayment = async (orderId: string, messageTarget: "recharge" | "orders" = "recharge") => {
@@ -2426,7 +4376,20 @@ print(completion.choices[0].message.content)`;
 
       if (result) {
         const submittedOrder = mapOrder(result);
-        setCreatedRechargeOrder((currentOrder) => (currentOrder?.id === submittedOrder.id ? submittedOrder : currentOrder));
+        setManualRechargeForms((current) => {
+          const next = { ...current };
+
+          for (const method of manualRechargePaymentOptions) {
+            if (current[method.key].createdOrder?.id === submittedOrder.id) {
+              next[method.key] = {
+                ...current[method.key],
+                createdOrder: submittedOrder,
+              };
+            }
+          }
+
+          return next;
+        });
       }
 
       const message = "已提交付款信息，等待管理员审核。";
@@ -2596,6 +4559,13 @@ print(completion.choices[0].message.content)`;
       return;
     }
 
+    if (!["pending", "submitted"].includes(order.status)) {
+      setAdminRechargeMessage("只有待支付或待审核订单可以执行审核操作。");
+      return;
+    }
+
+    const reviewNote = reviewNoteByOrderId[order.id]?.trim() ?? "";
+
     setReviewingRechargeOrderId(order.id);
 
     try {
@@ -2603,6 +4573,7 @@ print(completion.choices[0].message.content)`;
         action === "approve" ? "approve_recharge_order_admin" : "reject_recharge_order_admin",
         {
           target_order_id: order.id,
+          admin_review_note: reviewNote || null,
         }
       );
 
@@ -2615,8 +4586,15 @@ print(completion.choices[0].message.content)`;
           ? `订单 ${order.id} 已通过，余额已增加 ¥${Number(order.amount ?? 0).toFixed(2)}。`
           : `订单 ${order.id} 已拒绝。`
       );
+      setReviewNoteByOrderId((current) => {
+        const next = { ...current };
+        delete next[order.id];
+        return next;
+      });
+      setSelectedAdminRechargeOrder(null);
       await Promise.all([
         loadAdminRechargeOrders(),
+        loadAdminOverview(),
         loadAdminUsers(),
         loadAdminFinance(),
         loadDashboardData(session),
@@ -3083,32 +5061,37 @@ print(completion.choices[0].message.content)`;
   };
 
   const LoginDialog = loginOpen ? (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4">
-      <Card className="w-full max-w-md rounded-3xl border-white/10 bg-slate-900 text-white shadow-2xl">
-        <CardContent className="p-6">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm">
+      <Card className="w-full max-w-md rounded-2xl border border-slate-200 bg-white text-slate-950 shadow-[0_24px_80px_rgba(15,23,42,0.18)]">
+        <CardContent className="p-6 sm:p-7">
           <div className="mb-5 flex items-start justify-between gap-4">
             <div>
               <BrandMark />
-              <h2 className="mt-4 text-2xl font-bold">
-                {authMode === "login" ? "登录控制台" : "注册账号"}
+              <h2 className="mt-5 text-2xl font-semibold tracking-tight text-slate-950">
+                {authMode === "login" ? dashboardCopy.auth.loginTitle : dashboardCopy.auth.signupTitle}
               </h2>
+              <p className="mt-2 text-sm leading-6 text-slate-500">{dashboardCopy.auth.helper}</p>
             </div>
-            <button onClick={closeLoginDialog} type="button">
+            <button
+              onClick={closeLoginDialog}
+              type="button"
+              className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+            >
               <X className="h-5 w-5" />
             </button>
           </div>
-          <div className="mb-5 grid grid-cols-2 rounded-2xl border border-white/10 bg-slate-950/80 p-1">
+          <div className="mb-5 grid grid-cols-2 rounded-xl border border-slate-200 bg-slate-100 p-1">
             <button
               type="button"
               onClick={() => {
                 setAuthMode("login");
                 setAuthMessage("");
               }}
-              className={`rounded-xl px-4 py-2 text-sm transition ${
-                authMode === "login" ? "bg-white text-slate-950" : "text-slate-300"
+              className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                authMode === "login" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 hover:text-slate-950"
               }`}
             >
-              登录
+              {dashboardCopy.auth.login}
             </button>
             <button
               type="button"
@@ -3116,51 +5099,77 @@ print(completion.choices[0].message.content)`;
                 setAuthMode("signup");
                 setAuthMessage("");
               }}
-              className={`rounded-xl px-4 py-2 text-sm transition ${
-                authMode === "signup" ? "bg-white text-slate-950" : "text-slate-300"
+              className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                authMode === "signup" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 hover:text-slate-950"
               }`}
             >
-              注册
+              {dashboardCopy.auth.signup}
             </button>
           </div>
+          <div className="mb-5 space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{dashboardCopy.auth.oauthDivider}</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => void handleOAuthSignIn("google")}
+                disabled={authLoading || authSubmitting || Boolean(oauthSubmittingProvider)}
+                className="flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Globe2 className="h-4 w-4 text-blue-500" />
+                <span className="truncate">
+                  {oauthSubmittingProvider === "google" ? dashboardCopy.auth.submitting : dashboardCopy.auth.googleLogin}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleOAuthSignIn("github")}
+                disabled={authLoading || authSubmitting || Boolean(oauthSubmittingProvider)}
+                className="flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <KeyRound className="h-4 w-4 text-slate-800" />
+                <span className="truncate">
+                  {oauthSubmittingProvider === "github" ? dashboardCopy.auth.submitting : dashboardCopy.auth.githubLogin}
+                </span>
+              </button>
+            </div>
+          </div>
           <form onSubmit={handleAuthSubmit}>
-            <label className="text-sm text-slate-300">邮箱</label>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{dashboardCopy.auth.emailAuthLabel}</p>
+            <label className="text-sm font-medium text-slate-700">{dashboardCopy.auth.email}</label>
             <input
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               autoComplete="email"
-              className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
               placeholder="you@example.com"
             />
-            <label className="mt-4 block text-sm text-slate-300">密码</label>
+            <label className="mt-4 block text-sm font-medium text-slate-700">{dashboardCopy.auth.password}</label>
             <input
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               autoComplete={authMode === "login" ? "current-password" : "new-password"}
-              className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
-              placeholder="至少 6 位"
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+              placeholder={dashboardCopy.auth.passwordPlaceholder}
             />
             {authMessage ? (
-              <p className="mt-3 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+              <p className="mt-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-700">
                 {authMessage}
               </p>
             ) : (
-              <p className="mt-3 text-xs text-slate-400">
-                当前只接入 Supabase 登录注册；支付、真实 AI API 和数据库业务表暂不启用。
-              </p>
+              <p className="mt-4 text-xs leading-5 text-slate-500">支持多语言控制台，登录后会保持当前语言偏好。</p>
             )}
             <Button
               type="submit"
-              disabled={authSubmitting || authLoading}
-              className="mt-5 w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={authSubmitting || authLoading || Boolean(oauthSubmittingProvider)}
+              className="mt-5 h-11 w-full rounded-xl bg-slate-950 text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {authSubmitting
-                ? "处理中..."
+                ? dashboardCopy.auth.submitting
                 : authMode === "login"
-                  ? "登录"
-                  : "注册"}
+                  ? dashboardCopy.auth.login
+                  : dashboardCopy.auth.signup}
             </Button>
           </form>
         </CardContent>
@@ -3170,19 +5179,14 @@ print(completion.choices[0].message.content)`;
 
   if (page === "dashboard") {
     return (
-      <div className="min-h-screen bg-slate-950 text-white">
-        <div className="pointer-events-none fixed inset-0 overflow-hidden">
-          <div className="absolute left-1/2 top-0 h-96 w-96 -translate-x-1/2 rounded-full bg-cyan-500/20 blur-3xl" />
-          <div className="absolute bottom-24 right-10 h-80 w-80 rounded-full bg-violet-500/20 blur-3xl" />
-        </div>
-
+      <div dir={languageMeta.dir} className="eel-console-shell min-h-screen text-slate-950">
         <Button
           type="button"
           onClick={() => setFunctionNavOpen(true)}
-          className="fixed left-4 top-28 z-40 rounded-2xl border border-cyan-300/30 bg-slate-900/90 text-white shadow-[0_0_24px_rgba(34,211,238,0.18)] backdrop-blur-xl hover:bg-slate-800"
+          className="eel-button-subtle fixed left-4 top-24 z-40 h-9 px-3 text-sm shadow-sm backdrop-blur-xl"
         >
           <Menu className="mr-2 h-4 w-4" />
-          功能导航
+          {dashboardCopy.functionNav}
         </Button>
 
         <div
@@ -3192,27 +5196,27 @@ print(completion.choices[0].message.content)`;
         >
           <button
             type="button"
-            aria-label="关闭功能导航"
+            aria-label={dashboardCopy.closeNav}
             onClick={() => setFunctionNavOpen(false)}
-            className={`absolute inset-0 bg-slate-950/55 transition-opacity ${
+            className={`absolute inset-0 bg-slate-950/25 backdrop-blur-sm transition-opacity ${
               functionNavOpen ? "opacity-100" : "opacity-0"
             }`}
           />
           <aside
-            className={`absolute left-0 top-0 flex h-full w-[85vw] flex-col border-r border-cyan-300/20 bg-slate-950/90 shadow-2xl shadow-cyan-950/40 backdrop-blur-2xl transition-transform duration-300 sm:w-[420px] lg:w-[25vw] ${
+            className={`absolute left-0 top-0 flex h-full w-[85vw] flex-col border-r border-slate-200 bg-white/95 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl transition-transform duration-300 sm:w-[420px] lg:w-[25vw] ${
               functionNavOpen ? "translate-x-0" : "-translate-x-full"
             }`}
           >
-            <div className="flex items-start justify-between gap-4 border-b border-white/10 p-5">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
               <div>
-                <p className="text-sm font-semibold text-cyan-300">后台导航</p>
-                <h2 className="mt-1 text-xl font-bold text-white">功能导航</h2>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600">{dashboardCopy.dashboardNav}</p>
+                <h2 className="mt-2 text-xl font-semibold text-slate-950">{dashboardCopy.functionNav}</h2>
               </div>
               <button
                 type="button"
-                aria-label="关闭功能导航"
+                aria-label={dashboardCopy.closeNav}
                 onClick={() => setFunctionNavOpen(false)}
-                className="rounded-2xl border border-white/10 bg-white/5 p-2 text-slate-200 transition hover:bg-white/10 hover:text-white"
+                className="rounded-md border border-slate-200 bg-white p-2 text-slate-500 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -3226,13 +5230,13 @@ print(completion.choices[0].message.content)`;
                     key={item.id}
                     type="button"
                     onClick={() => navigateDashboardModule(item)}
-                    className={`w-full rounded-2xl border px-4 py-3 text-left text-sm transition ${
+                    className={`w-full rounded-lg border px-4 py-3 text-left text-sm transition ${
                       isActive
-                        ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100"
-                        : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/20 hover:bg-white/[0.08] hover:text-white"
+                        ? "border-blue-200 bg-blue-50 text-blue-700 shadow-sm"
+                        : "border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-slate-50 hover:text-slate-950"
                     }`}
                   >
-                    {item.label}
+                    {getDashboardNavLabel(item)}
                   </button>
                 );
               })}
@@ -3240,48 +5244,55 @@ print(completion.choices[0].message.content)`;
           </aside>
         </div>
 
-        <header className="relative z-10 border-b border-white/10 bg-slate-950/75 backdrop-blur-xl">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+        <header className="relative z-10 border-b border-slate-200 bg-white/88 backdrop-blur-xl">
+          <div className="mx-auto flex max-w-[1440px] items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
             <button onClick={() => setPage("home")} className="flex items-center gap-2">
               <BrandMark />
             </button>
             <div className="flex items-center gap-3">
-              <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300 sm:flex">
-                <User className="h-4 w-4" />
-                {userEmail || "已登录用户"}
+              <DashboardLanguageSwitcher
+                language={appLanguage}
+                copy={dashboardCopy}
+                onChange={setDashboardLanguage}
+              />
+              <div className="hidden h-9 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 sm:flex">
+                <User className="h-4 w-4 text-blue-500" />
+                {userEmail || dashboardCopy.signedInUser}
               </div>
               <Button
                 variant="ghost"
-                className="text-slate-200 hover:bg-white/10 hover:text-white"
+                className="text-slate-600 hover:bg-slate-100 hover:text-slate-950"
                 onClick={logout}
               >
                 <LogOut className="mr-2 h-4 w-4" />
-                退出
+                {dashboardCopy.logout}
               </Button>
             </div>
           </div>
         </header>
 
-        <main className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-          <div className="mb-8">
-            <p className="text-sm font-semibold text-cyan-300">控制台</p>
-            <h1 className="mt-2 text-3xl font-black sm:text-5xl">API 管理后台</h1>
-            <p className="mt-4 text-slate-300">这是本地演示版：功能能点能用，数据存在浏览器内存，刷新页面会重置。</p>
+        <main className="relative z-10 mx-auto max-w-[1440px] px-4 py-8 sm:px-6 lg:px-8">
+          <div className="mb-7">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-600">{dashboardCopy.consoleLabel}</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-normal text-slate-950 sm:text-4xl">{dashboardCopy.consoleTitle}</h1>
+            <p className="mt-4 max-w-4xl text-sm leading-7 text-slate-600 sm:text-base">{dashboardCopy.consoleDesc}</p>
           </div>
 
-          <div className="mb-8 flex flex-wrap gap-3">
+          <div className="mb-8 flex flex-wrap gap-2">
             {visibleTabs.map((tab) => (
               <button
                 key={tab.key}
                 onClick={() => setDashboardTab(tab.key)}
-                className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition ${
+                className={`eel-console-tab ${
                   activeDashboardTab === tab.key
-                    ? "bg-white text-slate-950"
-                    : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white"
+                    ? "eel-console-tab-active"
+                    : tab.key === "chat"
+                      ? "eel-console-tab-accent"
+                      : ""
                 }`}
               >
                 {tab.icon}
-                {tab.label}
+                {dashboardCopy.tabs[tab.key]}
               </button>
             ))}
           </div>
@@ -3300,21 +5311,25 @@ print(completion.choices[0].message.content)`;
 
           {dataLoading ? (
             <div className="mb-5 rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-3 text-sm text-slate-300">
-              正在读取你的 Supabase 数据...
+              {dashboardCopy.loadingData}
             </div>
           ) : null}
 
           {activeDashboardTab === "overview" ? (
             <div id="overview" className="scroll-mt-28">
-              <SectionTitle label="Overview" title="平台概览" desc="查看余额、请求数、密钥数量和模型数量。" />
+              <SectionTitle
+                label={dashboardCopy.overview.label}
+                title={dashboardCopy.overview.title}
+                desc={dashboardCopy.overview.desc}
+              />
               <div className="grid gap-4 md:grid-cols-4">
                 {[
-                  ["当前余额", `¥${balance.toFixed(4)}`, <Wallet key="wallet" className="h-5 w-5" />],
-                  ["API Key 数量", String(apiKeys.length), <KeyRound key="key" className="h-5 w-5" />],
-                  ["今日请求", String(usageLogs.length), <Activity key="activity" className="h-5 w-5" />],
-                  ["可用模型", String(modelList.length), <Database key="db" className="h-5 w-5" />],
+                  [dashboardCopy.overview.balance, `¥${balance.toFixed(4)}`, <Wallet key="wallet" className="h-5 w-5" />],
+                  [dashboardCopy.overview.apiKeys, String(apiKeys.length), <KeyRound key="key" className="h-5 w-5" />],
+                  [dashboardCopy.overview.todayRequests, String(usageLogs.length), <Activity key="activity" className="h-5 w-5" />],
+                  [dashboardCopy.overview.models, String(modelList.length), <Database key="db" className="h-5 w-5" />],
                 ].map(([label, value, icon]) => (
-                  <Card key={String(label)} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+                  <Card key={String(label)} className="rounded-lg border-white/10 bg-white/[0.06] text-white">
                     <CardContent className="p-5">
                       <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-2xl bg-white text-slate-950">
                         {icon}
@@ -3325,45 +5340,81 @@ print(completion.choices[0].message.content)`;
                   </Card>
                 ))}
               </div>
+              {isAdmin ? (
+                <div className="mt-8">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-xl font-bold text-white">运营概览</h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-400">
+                        管理员日常关注的用户、充值、请求和模型启用情况。
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void loadAdminOverview()}
+                      disabled={adminOverviewLoading}
+                      className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {adminOverviewLoading ? "刷新中..." : "刷新概览"}
+                    </Button>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    {adminOverviewCards.map(([label, value, hint]) => (
+                      <Card key={label} className="rounded-lg border-white/10 bg-slate-900/80 text-white">
+                        <CardContent className="p-5">
+                          <p className="text-sm text-slate-400">{label}</p>
+                          <p className="mt-2 text-2xl font-bold text-cyan-100">{value}</p>
+                          <p className="mt-2 text-xs text-slate-500">{hint}</p>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
           {activeDashboardTab === "keys" ? (
             <div id="api-keys" className="scroll-mt-28">
-              <SectionTitle label="API Key" title="密钥管理" desc="创建、复制和删除你的接口密钥；列表只展示 Key 前缀。" />
-              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <SectionTitle
+                label={dashboardCopy.keys.label}
+                title={dashboardCopy.keys.title}
+                desc={dashboardCopy.keys.desc}
+              />
+              <Card className="border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                     <Button
                       onClick={() => setShowKeys(!showKeys)}
                       variant="outline"
-                      className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10"
+                      className="eel-button-subtle"
                     >
                       {showKeys ? <EyeOff className="mr-2 h-4 w-4" /> : <Eye className="mr-2 h-4 w-4" />}
-                      {showKeys ? "隐藏密钥" : "显示密钥"}
+                      {showKeys ? dashboardCopy.keys.hide : dashboardCopy.keys.show}
                     </Button>
-                    <Button onClick={addApiKey} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                    <Button onClick={addApiKey} className="eel-button-primary">
                       <Plus className="mr-2 h-4 w-4" />
-                      新建 API Key
+                      {dashboardCopy.keys.create}
                     </Button>
                   </div>
                   {createdApiKey ? (
-                    <div className="mb-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4">
-                      <p className="text-sm font-semibold text-cyan-100">API Key 已创建</p>
+                    <div className="mb-5 rounded-lg border border-cyan-300/20 bg-cyan-300/10 p-4">
+                      <p className="text-sm font-semibold text-cyan-100">{dashboardCopy.keys.created}</p>
                       <p className="mt-2 break-all font-mono text-xs text-cyan-50">
-                        前缀：{createdApiKey.slice(0, API_KEY_PREFIX_LENGTH)}...
+                        {dashboardCopy.keys.prefix}: {createdApiKey.slice(0, API_KEY_PREFIX_LENGTH)}...
                       </p>
                       <p className="mt-2 text-xs leading-5 text-cyan-100/80">
-                        完整密钥不会在页面明文展示；如需接入外部开发者接口，请立即复制，离开后无法再次获取。
+                        {dashboardCopy.keys.completeKeyHint}
                       </p>
                       <div className="mt-3 flex gap-2">
                         <Button
                           size="sm"
-                          onClick={() => copy(createdApiKey, "已复制完整 API Key")}
-                          className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200"
+                          onClick={() => copy(createdApiKey, `${dashboardCopy.keys.copy} API Key`)}
+                          className="eel-button-primary"
                         >
                           <Copy className="mr-2 h-4 w-4" />
-                          复制
+                          {dashboardCopy.keys.copy}
                         </Button>
                         <Button
                           size="sm"
@@ -3371,21 +5422,26 @@ print(completion.choices[0].message.content)`;
                           onClick={() => setCreatedApiKey("")}
                           className="text-cyan-100 hover:bg-white/10 hover:text-white"
                         >
-                          我已保存
+                          {dashboardCopy.keys.saved}
                         </Button>
                       </div>
                     </div>
                   ) : null}
-                  <div className="space-y-3">
+                  <div className="overflow-hidden rounded-lg border border-white/10 bg-slate-950/45">
                     {apiKeys.map((item) => (
-                      <div key={item.id} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                      <div key={item.id} className="border-b border-white/10 p-4 last:border-b-0">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="font-semibold">{item.name}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-semibold">{item.name}</p>
+                              <span className="rounded-md border border-emerald-300/20 bg-emerald-300/10 px-2 py-0.5 text-xs text-emerald-200">
+                                active
+                              </span>
+                            </div>
                             <p className="mt-1 break-all font-mono text-xs text-slate-400">
                               {showKeys ? `${item.keyPrefix}...` : `${item.keyPrefix}********************************`}
                             </p>
-                            <p className="mt-2 text-xs text-amber-200/80">完整密钥不会在列表中显示。</p>
+                            <p className="mt-2 text-xs text-amber-200/80">{dashboardCopy.keys.listHint}</p>
                             <p className="mt-2 text-xs text-slate-500">创建时间：{item.createdAt}</p>
                           </div>
                           <div className="flex shrink-0 gap-2">
@@ -3402,7 +5458,7 @@ print(completion.choices[0].message.content)`;
                       </div>
                     ))}
                     {apiKeys.length === 0 ? (
-                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">还没有 API Key，请点击新建。</div>
+                      <div className="p-4 text-slate-400">{dashboardCopy.keys.empty}</div>
                     ) : null}
                   </div>
                 </CardContent>
@@ -3412,10 +5468,14 @@ print(completion.choices[0].message.content)`;
 
           {activeDashboardTab === "playground" ? (
             <div id="playground" className="scroll-mt-28">
-              <SectionTitle label="Playground" title="在线测试台" desc="当前是本地模拟请求，买完 API Key 后可以接真实模型。" />
-              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <SectionTitle
+                label={dashboardCopy.playground.label}
+                title={dashboardCopy.playground.title}
+                desc={dashboardCopy.playground.desc}
+              />
+              <Card className="rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
-                  <label className="text-sm text-slate-300">选择模型</label>
+                  <label className="text-sm text-slate-300">{dashboardCopy.playground.chooseModel}</label>
                   <select
                     value={selectedModelName}
                     onChange={(event) => setSelectedModel(event.target.value)}
@@ -3427,18 +5487,18 @@ print(completion.choices[0].message.content)`;
                       </option>
                     ))}
                   </select>
-                  <label className="mt-4 block text-sm text-slate-300">输入内容</label>
+                  <label className="mt-4 block text-sm text-slate-300">{dashboardCopy.playground.input}</label>
                   <textarea
-                    value={testPrompt}
-                    onChange={(event) => setTestPrompt(event.target.value)}
+                    value={previewPrompt}
+                    onChange={(event) => setPreviewPrompt(event.target.value)}
                     className="mt-2 min-h-28 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
                   />
-                  <Button onClick={runTest} className="mt-4 rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                  <Button onClick={runPreview} className="mt-4 rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
                     <Play className="mr-2 h-4 w-4" />
-                    发送测试
+                    {dashboardCopy.playground.send}
                   </Button>
                   <pre className="mt-4 whitespace-pre-wrap rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 text-slate-200">
-                    {testResult}
+                    {previewResult}
                   </pre>
                 </CardContent>
               </Card>
@@ -3448,41 +5508,41 @@ print(completion.choices[0].message.content)`;
           {activeDashboardTab === "chat" ? (
             <div id="chat" className="scroll-mt-28">
               <SectionTitle
-                label="AI Chat"
-                title="AI 聊天"
-                desc="登录后使用当前账号的 API Key、余额和启用模型发起正式聊天请求。"
+                label={dashboardCopy.chat.label}
+                title={dashboardCopy.chat.title}
+                desc={dashboardCopy.chat.desc}
               />
-              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-                <Card className="rounded-3xl border-cyan-300/15 bg-white/[0.06] text-white shadow-[0_0_28px_rgba(34,211,238,0.08)]">
+              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+                <Card className="border-cyan-300/20 bg-slate-900/80 text-white">
                   <CardContent className="p-0">
                     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-cyan-300/25 bg-cyan-300/10 text-cyan-200">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-md border border-cyan-300/25 bg-cyan-300/10 text-cyan-200">
                           <MessageSquare className="h-5 w-5" />
                         </div>
                         <div>
                           <p className="font-semibold">/api/chat</p>
-                          <p className="text-xs text-slate-400">POST · 登录态内部调用</p>
+                          <p className="text-xs text-slate-400">POST · {dashboardCopy.chat.endpointHint}</p>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <span className="rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1 text-xs font-semibold text-cyan-100">
-                          当前模型：{chatModelInfo?.name ?? "暂无可用模型"}
+                        <span className="rounded-md border border-cyan-300/25 bg-cyan-300/10 px-3 py-1 text-xs font-semibold text-cyan-100">
+                          {dashboardCopy.chat.currentModel}: {chatModelInfo?.name ?? dashboardCopy.chat.noModel}
                         </span>
-                        <span className="rounded-full border border-emerald-300/25 bg-emerald-300/10 px-3 py-1 text-xs font-semibold text-emerald-100">
-                          当前余额：¥{balance.toFixed(4)}
+                        <span className="rounded-md border border-emerald-300/25 bg-emerald-300/10 px-3 py-1 text-xs font-semibold text-emerald-100">
+                          {dashboardCopy.chat.balance}: ¥{balance.toFixed(4)}
                         </span>
                       </div>
                     </div>
 
-                    <div className="max-h-[520px] min-h-[330px] overflow-y-auto p-5">
+                    <div className="max-h-[56vh] min-h-[360px] overflow-y-auto p-5">
                       {!activeChatApiKey ? (
-                        <div className="flex min-h-[280px] items-center justify-center rounded-3xl border border-dashed border-amber-300/25 bg-amber-300/10 p-6 text-center">
+                        <div className="flex min-h-[300px] items-center justify-center rounded-lg border border-dashed border-amber-300/25 bg-amber-300/10 p-6 text-center">
                           <div>
-                            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-300/25 bg-amber-300/10 text-amber-100">
+                            <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-md border border-amber-300/25 bg-amber-300/10 text-amber-100">
                               <KeyRound className="h-6 w-6" />
                             </div>
-                            <p className="font-semibold text-amber-50">你还没有 API Key，请先到 API Key 页面创建一个。</p>
+                            <p className="font-semibold text-amber-50">{dashboardCopy.chat.missingKey}</p>
                             <Button
                               type="button"
                               onClick={() =>
@@ -3492,21 +5552,21 @@ print(completion.choices[0].message.content)`;
                                   tab: "keys",
                                 })
                               }
-                              className="mt-4 rounded-2xl bg-white text-slate-950 hover:bg-slate-200"
+                              className="eel-button-primary mt-4"
                             >
-                              去创建 API Key
+                              {dashboardCopy.chat.createKey}
                             </Button>
                           </div>
                         </div>
                       ) : chatMessages.length === 0 ? (
-                        <div className="flex min-h-[280px] items-center justify-center rounded-3xl border border-dashed border-cyan-300/20 bg-slate-950/50 p-6 text-center">
+                        <div className="flex min-h-[300px] items-center justify-center rounded-lg border border-dashed border-cyan-300/20 bg-slate-950/50 p-6 text-center">
                           <div>
-                            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-cyan-300/25 bg-cyan-300/10 text-cyan-200">
+                            <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-md border border-cyan-300/25 bg-cyan-300/10 text-cyan-200">
                               <Bot className="h-6 w-6" />
                             </div>
-                            <p className="font-semibold text-slate-100">还没有聊天记录</p>
+                            <p className="font-semibold text-slate-100">{dashboardCopy.chat.emptyTitle}</p>
                             <p className="mt-2 text-sm leading-6 text-slate-400">
-                              选择模型，然后发送第一条消息。Enter 发送，Shift+Enter 换行。
+                              {dashboardCopy.chat.emptyDesc}
                             </p>
                           </div>
                         </div>
@@ -3521,15 +5581,15 @@ print(completion.choices[0].message.content)`;
                                 className={`flex ${isUserMessage ? "justify-end" : "justify-start"}`}
                               >
                                 <div
-                                  className={`max-w-[86%] rounded-3xl border px-4 py-3 ${
+                                  className={`max-w-[86%] rounded-lg border px-4 py-3 ${
                                     isUserMessage
-                                      ? "border-cyan-300/30 bg-cyan-300/15 text-cyan-50"
+                                      ? "border-cyan-300/24 bg-cyan-300/12 text-cyan-50"
                                       : "border-white/10 bg-slate-950/70 text-slate-100"
                                   }`}
                                 >
                                   <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
                                     {isUserMessage ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
-                                    <span>{isUserMessage ? "你" : "Assistant"}</span>
+                                    <span>{isUserMessage ? dashboardCopy.chat.user : dashboardCopy.chat.assistant}</span>
                                     <span>{message.createdAt}</span>
                                     {message.model ? (
                                       <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] text-cyan-200">
@@ -3544,9 +5604,9 @@ print(completion.choices[0].message.content)`;
                           })}
                           {chatLoading ? (
                             <div className="flex justify-start">
-                              <div className="rounded-3xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
+                              <div className="rounded-lg border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
                                 <span className="mr-2 inline-flex h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
-                                正在等待模型回复...
+                                {dashboardCopy.chat.waiting}
                               </div>
                             </div>
                           ) : null}
@@ -3562,7 +5622,7 @@ print(completion.choices[0].message.content)`;
                     ) : null}
 
                     <form onSubmit={handleChatSubmit} className="border-t border-white/10 p-5">
-                      <label className="text-sm text-slate-300">输入内容</label>
+                      <label className="text-sm font-medium text-slate-300">{dashboardCopy.chat.inputLabel}</label>
                       <textarea
                         value={chatInput}
                         onChange={(event) => setChatInput(event.target.value)}
@@ -3573,20 +5633,20 @@ print(completion.choices[0].message.content)`;
                           }
                         }}
                         disabled={chatLoading}
-                        className="mt-2 min-h-28 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300 disabled:cursor-not-allowed disabled:opacity-70"
-                        placeholder="请输入要发送给模型的消息"
+                        className="mt-2 min-h-28 w-full resize-none rounded-lg border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300 disabled:cursor-not-allowed disabled:opacity-70"
+                        placeholder={dashboardCopy.chat.placeholder}
                       />
                       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                         <p className="text-xs leading-5 text-slate-400">
-                          Enter 发送，Shift+Enter 换行；不会把 prompt 或完整 API Key 写入 localStorage。
+                          {dashboardCopy.chat.inputHint}
                         </p>
                         <Button
                           type="submit"
                           disabled={chatLoading || !chatInput.trim() || !activeChatApiKey || !chatModelInfo || !session}
-                          className="rounded-2xl bg-white px-5 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                          className="eel-button-primary px-5 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           <Send className="mr-2 h-4 w-4" />
-                          {chatLoading ? "发送中..." : "发送"}
+                          {chatLoading ? dashboardCopy.chat.sending : dashboardCopy.chat.send}
                         </Button>
                       </div>
                     </form>
@@ -3594,12 +5654,12 @@ print(completion.choices[0].message.content)`;
                 </Card>
 
                 <div className="space-y-5">
-                  <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
-                    <CardContent className="p-6">
-                      <h3 className="text-lg font-bold">调用设置</h3>
+                  <Card className="border-white/10 bg-white/[0.045] text-white">
+                    <CardContent className="p-5">
+                      <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-300">{dashboardCopy.chat.settings}</h3>
                       <div className="mt-5">
                         <div className="flex items-center justify-between gap-3">
-                          <label className="text-sm text-slate-300">使用 API Key</label>
+                          <label className="text-sm text-slate-300">{dashboardCopy.chat.useApiKey}</label>
                           <Button
                             type="button"
                             size="sm"
@@ -3608,14 +5668,14 @@ print(completion.choices[0].message.content)`;
                             onClick={() => void loadChatApiKeys(session)}
                             className="text-slate-300 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            {chatKeysLoading ? "刷新中..." : "刷新"}
+                            {chatKeysLoading ? dashboardCopy.chat.refreshing : dashboardCopy.chat.refresh}
                           </Button>
                         </div>
                         {chatApiKeys.length > 0 ? (
                           <select
                             value={activeChatApiKey?.id ?? ""}
                             onChange={(event) => setSelectedChatApiKeyId(event.target.value)}
-                            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-cyan-300"
+                            className="mt-2 w-full rounded-lg border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-cyan-300"
                           >
                             {chatApiKeys.map((key) => (
                               <option key={key.id} value={key.id}>
@@ -3624,73 +5684,210 @@ print(completion.choices[0].message.content)`;
                             ))}
                           </select>
                         ) : (
-                          <div className="mt-2 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
-                            你还没有 API Key，请先到 API Key 页面创建一个。
+                          <div className="mt-2 rounded-lg border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
+                            {dashboardCopy.chat.missingKey}
                           </div>
                         )}
                         {chatKeysMessage ? (
                           <p className="mt-2 text-xs leading-5 text-rose-200">{chatKeysMessage}</p>
                         ) : (
                           <p className="mt-2 text-xs leading-5 text-slate-400">
-                            这里只显示 key_prefix，不显示也不保存完整 API Key。
+                            {dashboardCopy.chat.keyPrefixHint}
                           </p>
                         )}
                       </div>
 
                       <div className="mt-5">
-                        <label className="text-sm text-slate-300">选择模型</label>
-                        <select
-                          value={chatModel}
-                          onChange={(event) => setChatModel(event.target.value)}
-                          disabled={chatAvailableModels.length === 0}
-                          className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-cyan-300"
-                        >
-                          {chatAvailableModels.map((model) => (
-                            <option key={model.name} value={model.name}>
-                              {model.name} - {model.label}
-                            </option>
-                          ))}
-                        </select>
+                        <label className="text-sm text-slate-300">{dashboardCopy.chat.chooseModel}</label>
+                        <div ref={chatModelPickerRef} className="relative mt-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (chatModelOptions.length > 0) {
+                                setChatModelPickerOpen((current) => !current);
+                              }
+                            }}
+                            disabled={chatModelOptions.length === 0}
+                            className="flex min-h-14 w-full items-center gap-3 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-left text-white outline-none transition hover:border-cyan-300/60 focus:border-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {selectedChatModelOption && selectedChatModelIcon ? (
+                              <VendorLogo
+                                providerId={selectedChatModelOption.provider}
+                                providerName={selectedChatModelOption.providerName}
+                                logoSrc={selectedChatModelIcon.src}
+                                logoAlt={selectedChatModelIcon.alt}
+                                size="sm"
+                                className="border-white/10 bg-white"
+                              />
+                            ) : (
+                              <Bot className="h-5 w-5 shrink-0 text-cyan-100" />
+                            )}
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-semibold text-white" title={selectedChatModelOption?.displayName ?? dashboardCopy.chat.noModel}>
+                                {selectedChatModelOption?.displayName ?? dashboardCopy.chat.noModel}
+                              </span>
+                              <span className="mt-0.5 block truncate font-mono text-xs text-slate-400" title={selectedChatModelOption?.name}>
+                                {selectedChatModelOption?.name ?? dashboardCopy.chat.noEnabledModel}
+                              </span>
+                            </span>
+                            <Search className="h-4 w-4 shrink-0 text-slate-400" />
+                          </button>
+
+                          {chatModelPickerOpen ? (
+                            <div className="absolute right-0 top-full z-[80] mt-2 w-full overflow-hidden rounded-xl border border-cyan-300/20 bg-slate-950 shadow-2xl shadow-black/40 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)]">
+                              <div className="border-b border-white/10 p-3">
+                                <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900 px-3 py-2">
+                                  <Search className="h-4 w-4 shrink-0 text-slate-400" />
+                                  <input
+                                    value={chatModelSearch}
+                                    onChange={(event) => setChatModelSearch(event.target.value)}
+                                    autoFocus
+                                    placeholder={dashboardCopy.chat.modelSearchPlaceholder}
+                                    className="h-8 min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-500"
+                                  />
+                                </div>
+                              </div>
+                              <div className="max-h-[420px] overflow-y-auto p-2">
+                                {filteredChatModelOptions.length > 0 ? (
+                                  filteredChatModelOptions.map((model) => {
+                                    const series = getSeriesById(model.series);
+                                    const icon = resolveModelIcon({
+                                      seriesId: model.series,
+                                      name: model.name,
+                                      displayName: model.displayName,
+                                      providerName: model.providerName,
+                                      provider: model.provider,
+                                      supplierName: model.supplierName,
+                                      upstreamModel: model.upstreamModel,
+                                      description: model.description,
+                                    });
+                                    const badges = [
+                                      ...capabilityOrder
+                                        .filter((capability) => model.capabilities.includes(capability))
+                                        .map((capability) => compactCapabilityLabels[capability]),
+                                      ...platformTagOrder
+                                        .filter((tag) => model.tags.includes(tag))
+                                        .map((tag) => compactPlatformTagLabels[tag]),
+                                    ].slice(0, 6);
+                                    const selected = model.name === (chatModelInfo?.name ?? chatModel);
+
+                                    return (
+                                      <button
+                                        key={model.name}
+                                        type="button"
+                                        onClick={() => {
+                                          setChatModel(model.name);
+                                          setChatModelSearch("");
+                                          setChatModelPickerOpen(false);
+                                        }}
+                                        className={`flex w-full gap-3 rounded-lg px-3 py-3 text-left transition ${
+                                          selected
+                                            ? "border border-cyan-300/30 bg-cyan-300/15"
+                                            : "border border-transparent hover:bg-white/10"
+                                        }`}
+                                      >
+                                        <VendorLogo
+                                          providerId={model.provider}
+                                          providerName={model.providerName}
+                                          logoSrc={icon.src}
+                                          logoAlt={icon.alt}
+                                          size="sm"
+                                          className="mt-0.5 border-white/10 bg-white"
+                                        />
+                                        <span className="min-w-0 flex-1">
+                                          <span className="flex min-w-0 items-center gap-2">
+                                            <span className="truncate text-sm font-semibold text-white" title={model.displayName}>
+                                              {model.displayName}
+                                            </span>
+                                            {selected ? (
+                                              <span className="shrink-0 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
+                                                {dashboardCopy.chat.selectedModel}
+                                              </span>
+                                            ) : null}
+                                          </span>
+                                          <span className="mt-1 block truncate font-mono text-xs text-cyan-100" title={model.name}>
+                                            {model.name}
+                                          </span>
+                                          <span className="mt-1 block truncate text-xs text-slate-400" title={`${model.providerName} / ${series.name}`}>
+                                            {model.providerName} / {series.name}
+                                          </span>
+                                          <span className="mt-2 flex flex-wrap gap-1.5">
+                                            {badges.map((badge) => (
+                                              <span key={badge} className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+                                                {badge}
+                                              </span>
+                                            ))}
+                                          </span>
+                                        </span>
+                                      </button>
+                                    );
+                                  })
+                                ) : (
+                                  <div className="rounded-lg border border-white/10 bg-white/5 px-4 py-6 text-center text-sm text-slate-400">
+                                    {dashboardCopy.chat.noModelMatches}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
 
                       {chatModelInfo ? (
-                        <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4">
-                          <p className="font-mono text-sm text-cyan-100">{chatModelInfo.name}</p>
-                          <p className="mt-2 text-sm font-semibold text-white">{chatModelInfo.label}</p>
+                        <div className="mt-5 rounded-lg border border-cyan-300/20 bg-cyan-300/10 p-4">
+                          <div className="flex items-start gap-3">
+                            {selectedChatModelOption && selectedChatModelIcon ? (
+                              <VendorLogo
+                                providerId={selectedChatModelOption.provider}
+                                providerName={selectedChatModelOption.providerName}
+                                logoSrc={selectedChatModelIcon.src}
+                                logoAlt={selectedChatModelIcon.alt}
+                                size="sm"
+                                className="border-white/10 bg-white"
+                              />
+                            ) : null}
+                            <div className="min-w-0">
+                              <p className="truncate font-mono text-sm text-cyan-100" title={chatModelInfo.name}>{chatModelInfo.name}</p>
+                              <p className="mt-2 truncate text-sm font-semibold text-white" title={chatModelInfo.label}>{chatModelInfo.label}</p>
+                              {selectedChatModelSeries ? (
+                                <p className="mt-1 text-xs text-slate-400">{selectedChatModelOption?.providerName} / {selectedChatModelSeries.name}</p>
+                              ) : null}
+                            </div>
+                          </div>
                           <p className="mt-2 text-sm leading-6 text-slate-300">{chatModelInfo.desc}</p>
                         </div>
                       ) : (
-                        <div className="mt-5 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
-                          当前没有启用模型，请联系管理员在模型价格管理里启用。
+                        <div className="mt-5 rounded-lg border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
+                          {dashboardCopy.chat.noEnabledModel}
                         </div>
                       )}
 
-                      <div className="mt-5 rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4">
-                        <p className="text-sm text-emerald-100">账户余额</p>
-                        <p className="mt-2 text-2xl font-black text-white">¥{balance.toFixed(4)}</p>
+                      <div className="mt-5 rounded-lg border border-emerald-300/20 bg-emerald-300/10 p-4">
+                        <p className="text-sm text-emerald-100">{dashboardCopy.chat.balance}</p>
+                        <p className="mt-2 text-2xl font-bold text-white">¥{balance.toFixed(4)}</p>
                       </div>
                     </CardContent>
                   </Card>
 
-                  <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
-                    <CardContent className="p-6">
+                  <Card className="border-white/10 bg-white/[0.045] text-white">
+                    <CardContent className="p-5">
                       <div className="mb-4 flex items-center justify-between gap-3">
-                        <h3 className="text-lg font-bold">接口返回结果</h3>
+                        <h3 className="text-base font-semibold">{dashboardCopy.chat.rawResponse}</h3>
                         {chatRawResponse ? (
                           <Button
                             type="button"
                             size="sm"
                             variant="ghost"
-                            onClick={() => copy(chatRawResponse, "已复制接口返回结果")}
+                            onClick={() => copy(chatRawResponse, dashboardCopy.chat.copyRaw)}
                             className="text-slate-300 hover:bg-white/10 hover:text-white"
                           >
                             <Copy className="mr-2 h-4 w-4" />
-                            复制
+                            {dashboardCopy.keys.copy}
                           </Button>
                         ) : null}
                       </div>
-                      <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap rounded-2xl border border-white/10 bg-slate-950/80 p-4 text-xs leading-6 text-slate-300">
-                        {chatRawResponse || "发送成功后，这里会显示原始 JSON 返回。"}
+                      <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-slate-950/80 p-4 text-xs leading-6 text-slate-300">
+                        {chatRawResponse || dashboardCopy.chat.rawResponseHint}
                       </pre>
                     </CardContent>
                   </Card>
@@ -3701,57 +5898,296 @@ print(completion.choices[0].message.content)`;
 
           {activeDashboardTab === "models" ? (
             <div id="models" className="scroll-mt-28">
-              <SectionTitle label="Models" title="模型列表" desc="这里展示对外模型别名、价格和路由说明。" />
+              <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600">Model Directory</p>
+                <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
+                  <div>
+                    <h2 className="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
+                      模型选择面板
+                    </h2>
+                    <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-600">
+                      直接浏览具体模型版本，再用搜索、产品系列、能力和标签快速缩小范围。真实接入状态来自 Supabase models 表，产品识别和标签由前端映射层补齐。
+                    </p>
+                  </div>
+                  <div className="grid min-w-[220px] grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-slate-500">目录版本</p>
+                      <p className="mt-1 text-2xl font-semibold text-slate-950">{modelDirectoryItems.length}</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-blue-50 p-3">
+                      <p className="text-blue-600">已接入</p>
+                      <p className="mt-1 text-2xl font-semibold text-blue-700">{connectedModelCount}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="relative mt-6">
+                  <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
+                  <input
+                    value={modelSearch}
+                    onChange={(event) => setModelSearch(event.target.value)}
+                    className="h-12 w-full rounded-xl border border-slate-200 bg-white pl-12 pr-4 text-base text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                    placeholder="搜索版本名、系列名或描述关键词，例如 ChatGPT、Claude、DeepSeek、代码、视频"
+                  />
+                </div>
+              </div>
               {modelsMessage ? (
-                <div className="mb-5 rounded-2xl border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
                   {modelsMessage}
                 </div>
               ) : null}
-              <div className="grid gap-4 lg:grid-cols-2">
-                {modelList.map((model) => (
-                  <Card key={model.name} className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
-                    <CardContent className="p-6">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-mono text-sm text-cyan-300">{model.name}</p>
-                          <h3 className="mt-2 text-xl font-bold">{model.label}</h3>
-                          <p className="mt-2 text-sm text-slate-400">{model.provider}</p>
-                          <p className="mt-3 text-slate-300">{model.desc}</p>
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-950">筛选条件</h3>
+                      <p className="mt-1 text-xs text-slate-500">筛选只影响下方模型列表，不会改变目录结构。</p>
+                    </div>
+                    {modelDirectoryHasActiveFilters ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setModelSearch("");
+                          setModelSeriesFilter("all");
+                          setModelCapabilityFilters([]);
+                          setModelTagFilters([]);
+                        }}
+                        className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                      >
+                        清空全部
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="space-y-4">
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">系列</p>
+                      <div className="flex gap-2 overflow-x-auto pb-1">
+                        {[{ id: "all" as const, name: "全部", provider: "other" as const, providerName: "All", productIconSrc: "", productIconAlt: "", logoSrc: "", logoAlt: "", description: "查看所有模型", defaultTags: [], aliases: [] }, ...modelSeriesList].map((series) => {
+                          const isActive = modelSeriesFilter === series.id;
+                          const count = series.id === "all" ? modelDirectoryItems.length : modelSeriesCounts[series.id] ?? 0;
+                          const icon = series.id === "all" ? null : getModelIconBySeries(series.id);
+
+                          return (
+                            <button
+                              key={series.id}
+                              type="button"
+                              onClick={() => setModelSeriesFilter(series.id as ModelDirectoryFilter<ModelSeriesId>)}
+                              className={`flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-sm transition ${
+                                isActive
+                                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                                  : "border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-slate-50"
+                              }`}
+                            >
+                              {series.id === "all" ? (
+                                <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500">
+                                  <Bot className="h-3.5 w-3.5" aria-hidden="true" />
+                                </span>
+                              ) : (
+                                <VendorLogo
+                                  providerId={series.provider}
+                                  providerName={series.name}
+                                  logoSrc={icon?.src}
+                                  logoAlt={icon?.alt}
+                                  size="xs"
+                                />
+                              )}
+                              <span>{series.name}</span>
+                              <span className="text-xs text-slate-400">{count}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <div>
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">能力</p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setModelCapabilityFilters([])}
+                            className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
+                              modelCapabilityFilters.length === 0
+                                ? "border-blue-200 bg-blue-50 text-blue-700"
+                                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                            }`}
+                          >
+                            全部
+                          </button>
+                          {capabilityOrder.map((capability) => (
+                            <button
+                              key={capability}
+                              type="button"
+                              onClick={() => toggleModelCapabilityFilter(capability)}
+                              className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
+                                modelCapabilityFilters.includes(capability)
+                                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                              }`}
+                            >
+                              {capabilityLabels[capability]}
+                            </button>
+                          ))}
                         </div>
-                        <span className="rounded-full bg-emerald-400/15 px-3 py-1 text-xs text-emerald-300">正常</span>
                       </div>
-                      <div className="mt-4 grid gap-2 text-sm text-slate-400 sm:grid-cols-2">
-                        <span>输入：{model.inputPrice}</span>
-                        <span>输出：{model.outputPrice}</span>
+                      <div>
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">平台标签</p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setModelTagFilters([])}
+                            className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
+                              modelTagFilters.length === 0
+                                ? "border-blue-200 bg-blue-50 text-blue-700"
+                                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                            }`}
+                          >
+                            全部
+                          </button>
+                          {platformTagOrder.map((tag) => (
+                            <button
+                              key={tag}
+                              type="button"
+                              onClick={() => toggleModelTagFilter(tag)}
+                              className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
+                                modelTagFilters.includes(tag)
+                                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                              }`}
+                            >
+                              {platformTagLabels[tag]}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-              {modelList.length === 0 ? (
-                <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
-                  暂无启用模型，请联系管理员在模型价格管理里启用。
+                    </div>
+                  </div>
                 </div>
-              ) : null}
+
+                <section className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-3 py-3 text-sm text-slate-600">
+                    <span>
+                      已找到 <strong className="text-slate-950">{filteredModelDirectoryItems.length}</strong> 个具体模型
+                    </span>
+                    <span>
+                      当前筛选：
+                      <strong className="ml-1 text-slate-950">
+                        {modelSeriesFilter === "all" ? "全部系列" : getSeriesById(modelSeriesFilter).name}
+                        {" · "}
+                        {modelCapabilityFilters.length === 0 ? "全部能力" : modelCapabilityFilters.map((capability) => capabilityLabels[capability]).join(" + ")}
+                        {" · "}
+                        {modelTagFilters.length === 0 ? "全部标签" : modelTagFilters.map((tag) => platformTagLabels[tag]).join(" + ")}
+                      </strong>
+                    </span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {filteredModelDirectoryItems.map((model) => {
+                      const series = getSeriesById(model.series);
+                      const icon = resolveModelIcon({
+                        seriesId: model.series,
+                        name: model.name,
+                        upstreamModel: model.upstreamModel,
+                        displayName: model.displayName,
+                        provider: model.provider,
+                        providerName: model.providerName,
+                        supplierName: model.supplierName,
+                        description: model.description,
+                      });
+
+                      return (
+                        <article
+                          key={`${model.source}-${model.id}-${model.name}`}
+                          className="flex flex-col gap-3 px-3.5 py-3 transition hover:bg-blue-50/40 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
+                            <VendorLogo
+                              providerId={series.provider}
+                              providerName={series.name}
+                              logoSrc={icon.src}
+                              logoAlt={icon.alt}
+                              size="md"
+                            />
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className="text-base font-semibold text-slate-950">{model.displayName}</h4>
+                                {model.connected ? (
+                                  <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                                    已接入
+                                  </span>
+                                ) : (
+                                  <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                                    目录
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mt-0.5 truncate text-xs text-slate-500">
+                                {series.name} · {model.providerName} · <span className="font-mono">{model.name}</span>
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex min-w-0 flex-1 flex-wrap gap-1.5 lg:justify-center">
+                            {model.capabilities.slice(0, 3).map((capability) => (
+                              <span
+                                key={capability}
+                                className="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700"
+                              >
+                                {compactCapabilityLabels[capability]}
+                              </span>
+                            ))}
+                            {model.tags.slice(0, 3).map((tag) => (
+                              <span
+                                key={tag}
+                                className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-600"
+                              >
+                                {compactPlatformTagLabels[tag]}
+                              </span>
+                            ))}
+                          </div>
+
+                          <div className="flex shrink-0 items-center justify-between gap-4 lg:min-w-[300px] lg:justify-end">
+                            <div className="text-right">
+                              <p className="text-xs text-slate-500">输入 / 输出</p>
+                              <p className="mt-0.5 text-xs font-semibold text-slate-950">
+                                {model.inputPrice} · {model.outputPrice}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-xs text-slate-500">上下文</p>
+                              <p className="mt-0.5 text-sm font-semibold text-slate-950">{model.contextLength}</p>
+                            </div>
+                            <span className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500">
+                              i
+                            </span>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                  {filteredModelDirectoryItems.length === 0 ? (
+                    <div className="m-3 rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500">
+                      没有匹配的模型。可以清空搜索或筛选条件后再试。
+                    </div>
+                  ) : null}
+                </section>
+              </div>
             </div>
           ) : null}
 
           {activeDashboardTab === "usage" ? (
             <div id="usage-logs" className="scroll-mt-28">
-              <SectionTitle label="Usage" title="用量记录" desc="从 Supabase usage_logs 表读取。当前测试台不会写入真实用量。" />
-              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <SectionTitle
+                label={dashboardCopy.tabs.usage}
+                title={dashboardCopy.tabs.usage}
+                desc="Review request records, token usage, cost, and status for account billing."
+              />
+              <Card className="rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="overflow-x-auto">
                     <table className="w-full min-w-[680px] text-left text-sm">
                       <thead className="text-slate-400">
                         <tr className="border-b border-white/10">
-                          <th className="py-3">时间</th>
-                          <th className="py-3">模型</th>
-                          <th className="py-3">供应商</th>
-                          <th className="py-3">输入</th>
-                          <th className="py-3">输出</th>
-                          <th className="py-3">费用</th>
-                          <th className="py-3">状态</th>
+                          {dashboardUiText.usageHeaders.map((header) => (
+                            <th key={header} className="py-3">{header}</th>
+                          ))}
                         </tr>
                       </thead>
                       <tbody>
@@ -3770,7 +6206,7 @@ print(completion.choices[0].message.content)`;
                     </table>
                     {usageLogs.length === 0 ? (
                       <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
-                        还没有用量记录。接入真实 API 中转后，这里会显示 usage_logs 数据。
+                        {dashboardUiText.noUsage}
                       </div>
                     ) : null}
                   </div>
@@ -3781,18 +6217,22 @@ print(completion.choices[0].message.content)`;
 
           {activeDashboardTab === "recharge" ? (
             <div id="recharge" className="scroll-mt-28">
-              <SectionTitle label="Recharge" title="充值中心" desc="手动转账创建订单，付款后提交给管理员审核到账。" />
-              <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-                <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
-                  <CardContent className="p-6">
-                    <form onSubmit={handleCreateRechargeOrder}>
-                      <div className="mb-5">
-                        <h3 className="text-xl font-bold">创建充值订单</h3>
-                        <p className="mt-2 text-sm leading-6 text-slate-400">
-                          选择金额并提交订单，转账完成后点击“我已付款”，管理员审核通过后余额到账。
-                        </p>
+              <SectionTitle
+                label={dashboardCopy.tabs.recharge}
+                title={dashboardCopy.tabs.recharge}
+                desc="Select a recharge amount, choose a payment method, and add funds to account balance."
+              />
+              <Card className="rounded-lg border-white/10 bg-white/[0.06] text-white">
+                <CardContent className="p-6">
+                  <div className="grid gap-8">
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-8 w-8 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-300/10 text-sm font-bold text-cyan-100">
+                          1
+                        </span>
+                        <h3 className="text-xl font-bold">{dashboardUiText.rechargeStepAmount}</h3>
                       </div>
-                      <div className="grid gap-3 sm:grid-cols-4">
+                      <div className="mt-4 grid gap-3 sm:grid-cols-4">
                         {rechargeAmountOptions.map((amount) => (
                           <button
                             key={amount}
@@ -3804,228 +6244,566 @@ print(completion.choices[0].message.content)`;
                                 : "border-white/10 bg-slate-950/60 text-slate-200 hover:border-cyan-300/60"
                             }`}
                           >
-                            <span className="block text-sm text-slate-400">充值金额</span>
-                            <span className="mt-2 block text-2xl font-black">¥{amount}</span>
+                            <span className="block text-sm text-slate-400">{dashboardUiText.rechargeAmount}</span>
+                            <span className="mt-2 block text-2xl font-black">￥{amount}</span>
                           </button>
                         ))}
                       </div>
-                      <div className="mt-4 grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
-                        <div>
-                          <label className="text-sm text-slate-300">自定义金额</label>
-                          <input
-                            type="number"
-                            min="0.01"
-                            step="0.01"
-                            value={customRechargeAmount}
-                            onFocus={() => setRechargeAmountChoice("custom")}
-                            onChange={(event) => {
-                              setRechargeAmountChoice("custom");
-                              setCustomRechargeAmount(event.target.value);
-                            }}
-                            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
-                            placeholder="输入其他金额"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-sm text-slate-300">备注</label>
-                          <input
-                            value={rechargeNote}
-                            onChange={(event) => setRechargeNote(event.target.value)}
-                            className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
-                            placeholder="转账姓名 / 付款账号后四位等"
-                          />
-                        </div>
+                      <div className="mt-4 max-w-sm">
+                        <label className="text-sm text-slate-300">{dashboardUiText.customAmount}</label>
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={customRechargeAmount}
+                          onFocus={() => setRechargeAmountChoice("custom")}
+                          onChange={(event) => {
+                            setRechargeAmountChoice("custom");
+                            setCustomRechargeAmount(event.target.value);
+                          }}
+                          className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                          placeholder={dashboardUiText.customAmountPlaceholder}
+                        />
                       </div>
-                      <Button
-                        type="submit"
-                        disabled={rechargeSubmitting}
-                        className="mt-5 rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {rechargeSubmitting ? "创建中..." : "创建充值订单"}
-                      </Button>
-                    </form>
-                    {rechargeMessage ? (
-                      <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
-                        {rechargeMessage}
-                      </div>
-                    ) : null}
-                  </CardContent>
-                </Card>
+                    </div>
 
-                <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
-                  <CardContent className="p-6">
-                    <h3 className="text-xl font-bold">付款说明</h3>
-                    {createdRechargeOrder ? (
-                      <div className="mt-5 space-y-4">
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-8 w-8 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-300/10 text-sm font-bold text-cyan-100">
+                          2
+                        </span>
+                        <h3 className="text-xl font-bold">{dashboardUiText.rechargeStepPayment}</h3>
+                      </div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-3">
+                        {rechargePaymentOptions.map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => {
+                              if (option.disabled) {
+                                setStripeMessage(stripePendingMessage);
+                                setRechargeMessage("");
+                                setPaypalMessage("");
+                                return;
+                              }
+
+                              setSelectedRechargePaymentMethod(option.key);
+                              setRechargeMessage("");
+                              setPaypalMessage("");
+                              setStripeMessage("");
+                            }}
+                            aria-disabled={option.disabled ? true : undefined}
+                            className={`rounded-2xl border px-4 py-4 text-left transition ${
+                              selectedRechargePaymentMethod === option.key
+                                ? "border-cyan-300 bg-cyan-300/15 text-cyan-100"
+                                : option.disabled
+                                  ? "cursor-not-allowed border-white/10 bg-slate-900/60 text-slate-500"
+                                : "border-white/10 bg-slate-950/60 text-slate-200 hover:border-cyan-300/60"
+                            }`}
+                          >
+                            <span className="flex items-center gap-2 text-base font-bold">
+                              {option.label}
+                              {option.badge ? (
+                                <span className="rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[11px] font-semibold text-amber-100">
+                                  {option.badge}
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="mt-2 block text-xs leading-5 text-slate-400">{option.desc}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-cyan-300/20 bg-slate-950/70 p-5">
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-8 w-8 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-300/10 text-sm font-bold text-cyan-100">
+                          3
+                        </span>
+                        <h3 className="text-xl font-bold">{dashboardUiText.rechargeStepConfirm}</h3>
+                      </div>
+                      <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
                         <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
-                          <p className="text-sm text-slate-400">订单号</p>
-                          <p className="mt-2 break-all font-mono text-sm text-cyan-200">{createdRechargeOrder.id}</p>
+                          <p className="text-slate-400">{dashboardUiText.rechargeAmount}</p>
+                          <p className="mt-2 text-2xl font-black text-white">
+                            ￥{Number.isFinite(selectedRechargeAmount) && selectedRechargeAmount > 0 ? selectedRechargeAmount.toFixed(2) : "0.00"}
+                          </p>
                         </div>
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
-                            <p className="text-sm text-slate-400">充值金额</p>
-                            <p className="mt-2 text-2xl font-black text-white">¥{createdRechargeOrder.amount.toFixed(2)}</p>
-                          </div>
-                          <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
-                            <p className="text-sm text-slate-400">订单状态</p>
-                            <div className="mt-3">
-                              <OrderStatusBadge status={createdRechargeOrder.status} />
-                            </div>
-                          </div>
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                          <p className="text-slate-400">{dashboardUiText.paymentMethod}</p>
+                          <p className="mt-2 text-lg font-bold text-cyan-100">{selectedRechargePaymentOption.label}</p>
                         </div>
-                        <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm leading-6 text-cyan-100">
-                          请按订单金额手动转账，并在备注里填写订单号后 6 位。管理员微信/支付宝收款码占位，正式收款信息上线前由管理员另行提供。
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                          <p className="text-slate-400">{dashboardUiText.creditMethod}</p>
+                          <p className="mt-2 text-sm leading-6 text-slate-200">
+                            {selectedRechargePaymentMethod === "paypal"
+                              ? `约 $${selectedPaypalAmount.toFixed(2)} 支付，预计到账 ￥${estimatedPaypalCny.toFixed(2)}`
+                              : selectedRechargePaymentMethod === "stripe"
+                                ? stripePendingMessage
+                                : dashboardUiText.manualCredit}
+                          </p>
                         </div>
+                      </div>
+                      <div className="mt-5 flex flex-wrap gap-3">
                         <Button
                           type="button"
-                          onClick={() => void submitRechargePayment(createdRechargeOrder.id)}
-                          disabled={createdRechargeOrder.status !== "pending" || submittingPaymentOrderId === createdRechargeOrder.id}
-                          className="w-full rounded-2xl bg-white text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                          onClick={openRechargePaymentDialog}
+                          className="rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200"
                         >
-                          {submittingPaymentOrderId === createdRechargeOrder.id ? "提交中..." : "我已付款"}
+                          {dashboardUiText.confirmPayment}
                         </Button>
+                        {paypalReturnOrderId ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void capturePaypalOrder(paypalReturnOrderId)}
+                            disabled={paypalCapturing}
+                            className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {paypalCapturing ? dashboardUiText.confirming : dashboardUiText.confirmPaypal}
+                          </Button>
+                        ) : null}
                       </div>
-                    ) : (
-                      <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/70 p-5 text-sm leading-6 text-slate-300">
-                        创建订单后，这里会显示订单号、金额、收款说明和“我已付款”按钮。
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
-              <Card className="mt-6 rounded-3xl border-cyan-300/15 bg-cyan-300/[0.06] text-white">
-                <CardContent className="p-6">
-                  <div className="mb-5">
-                    <h3 className="text-xl font-bold">PayPal Sandbox 支付</h3>
-                    <p className="mt-2 text-sm leading-6 text-slate-400">
-                      使用 PayPal 沙箱订单完成在线充值。支付成功返回后会自动确认到账，也可以手动点击确认。
-                    </p>
+                    </div>
                   </div>
-                  <form onSubmit={handleCreatePaypalOrder}>
-                    <div className="grid gap-3 sm:grid-cols-4">
-                      {paypalAmountOptions.map((amount) => (
-                        <button
-                          key={amount}
-                          type="button"
-                          onClick={() => setPaypalAmountChoice(String(amount))}
-                          className={`rounded-2xl border px-4 py-4 text-left transition ${
-                            paypalAmountChoice === String(amount)
-                              ? "border-cyan-300 bg-cyan-300/15 text-cyan-100"
-                              : "border-white/10 bg-slate-950/60 text-slate-200 hover:border-cyan-300/60"
-                          }`}
-                        >
-                          <span className="block text-sm text-slate-400">Sandbox 金额</span>
-                          <span className="mt-2 block text-2xl font-black">${amount}</span>
-                        </button>
-                      ))}
+                  {rechargeMessage ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                      {rechargeMessage}
                     </div>
-                    <div className="mt-4 max-w-sm">
-                      <label className="text-sm text-slate-300">自定义金额（USD）</label>
-                      <input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={customPaypalAmount}
-                        onFocus={() => setPaypalAmountChoice("custom")}
-                        onChange={(event) => {
-                          setPaypalAmountChoice("custom");
-                          setCustomPaypalAmount(event.target.value);
-                        }}
-                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
-                        placeholder="输入其他美元金额"
-                      />
-                    </div>
-                    <div className="mt-5 flex flex-wrap gap-3">
-                      <Button
-                        type="submit"
-                        disabled={paypalSubmitting || paypalCapturing}
-                        className="rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {paypalSubmitting ? "创建中..." : "PayPal Sandbox 支付"}
-                      </Button>
-                      {paypalReturnOrderId ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={() => void capturePaypalOrder(paypalReturnOrderId)}
-                          disabled={paypalCapturing}
-                          className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {paypalCapturing ? "确认中..." : "确认到账"}
-                        </Button>
-                      ) : null}
-                    </div>
-                  </form>
+                  ) : null}
                   {paypalMessage ? (
                     <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
                       {paypalMessage}
                     </div>
                   ) : null}
+                  {stripeMessage ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                      {stripeMessage}
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
+              {paymentDialogOpen ? (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center px-4 py-6">
+                  <button
+                    type="button"
+                    aria-label="关闭支付弹窗"
+                    className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+                    onClick={() => setPaymentDialogOpen(false)}
+                  />
+                  <div className="relative z-10 max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg border border-cyan-300/20 bg-slate-950 p-6 text-white shadow-2xl shadow-black/40">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-200">确认支付</p>
+                        <h3 className="mt-2 text-2xl font-black">{selectedRechargePaymentOption.title}</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentDialogOpen(false)}
+                        className="rounded-full border border-white/10 bg-white/5 p-2 text-slate-300 hover:text-white"
+                        aria-label="关闭"
+                      >
+                        <X className="h-5 w-5" />
+                      </button>
+                    </div>
+
+                    {selectedRechargePaymentMethod === "paypal" ? (
+                      <form onSubmit={handleCreatePaypalOrder} className="mt-6 space-y-5">
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                            <p className="text-sm text-slate-400">PayPal 支付金额</p>
+                            <p className="mt-2 text-2xl font-black text-white">${selectedPaypalAmount.toFixed(2)}</p>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                            <p className="text-sm text-slate-400">预计到账人民币</p>
+                            <p className="mt-2 text-2xl font-black text-cyan-100">￥{estimatedPaypalCny.toFixed(2)}</p>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                            <p className="text-sm text-slate-400">汇率</p>
+                            <p className="mt-2 text-sm font-semibold text-slate-200">
+                              1 USD = {paypalExchangeRate.toFixed(2)} CNY
+                            </p>
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm leading-6 text-cyan-100">
+                          PayPal 会创建订单并跳转到 PayPal 支付页。最终入账金额以服务端保存的订单金额和汇率为准。
+                        </div>
+                        <Button
+                          type="submit"
+                          disabled={paypalSubmitting || paypalCapturing}
+                          className="w-full rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {paypalSubmitting ? "创建中..." : "前往 PayPal 支付"}
+                        </Button>
+                        {paypalMessage ? (
+                          <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                            {paypalMessage}
+                          </div>
+                        ) : null}
+                      </form>
+                    ) : selectedRechargePaymentMethod === "stripe" ? (
+                      <form onSubmit={handleCreateStripeCheckoutSession} className="mt-6 space-y-5">
+                        <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
+                          {stripePendingMessage}
+                        </div>
+                        <Button
+                          type="submit"
+                          disabled
+                          className="w-full rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Stripe 审核中
+                        </Button>
+                        {stripeMessage ? (
+                          <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                            {stripeMessage}
+                          </div>
+                        ) : null}
+                      </form>
+                    ) : activeManualPaymentMethod && activeManualRechargeForm && activeManualRechargeOption ? (
+                      <form
+                        onSubmit={(event) => void handleCreateRechargeOrder(event, activeManualPaymentMethod)}
+                        className="mt-6 space-y-5"
+                      >
+                        <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+                          <div className="rounded-2xl border border-cyan-300/20 bg-slate-900/70 p-4">
+                            <p className="text-sm font-semibold text-cyan-100">{activeManualRechargeOption.label}收款码</p>
+                            <div className="mt-4 flex min-h-[240px] items-center justify-center rounded-xl border border-white/10 bg-slate-950/70 p-4">
+                              {manualQrStatus[activeManualPaymentMethod] === "missing" ? (
+                                <span className="text-center text-sm text-slate-400">请管理员上传收款码</span>
+                              ) : (
+                                <Image
+                                  src={activeManualRechargeOption.qrSrc}
+                                  width={240}
+                                  height={240}
+                                  alt={`${activeManualRechargeOption.label}收款码`}
+                                  onLoad={() =>
+                                    setManualQrStatus((current) => ({
+                                      ...current,
+                                      [activeManualPaymentMethod]: "loaded",
+                                    }))
+                                  }
+                                  onError={() =>
+                                    setManualQrStatus((current) => ({
+                                      ...current,
+                                      [activeManualPaymentMethod]: "missing",
+                                    }))
+                                  }
+                                  className="h-[240px] w-[240px] rounded-lg bg-white object-contain p-2"
+                                />
+                              )}
+                            </div>
+                          </div>
+                          <div className="space-y-4">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                              <p className="text-sm text-slate-400">转账金额</p>
+                              <p className="mt-2 text-3xl font-black text-white">￥{selectedRechargeAmount.toFixed(2)}</p>
+                              <p className="mt-3 text-sm leading-6 text-cyan-100">
+                                {activeManualRechargeOption.label}：扫码转账后，请填写付款账号后四位并提交审核。
+                              </p>
+                              <p className="mt-1 text-sm text-slate-400">管理员审核通过后余额到账。</p>
+                            </div>
+                            <div>
+                              <label className="text-sm text-slate-300">付款账号后四位 / 转账备注</label>
+                              <input
+                                value={activeManualRechargeForm.note}
+                                onChange={(event) =>
+                                  updateManualRechargeForm(activeManualPaymentMethod, {
+                                    note: event.target.value,
+                                  })
+                                }
+                                className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                                placeholder="付款账号后四位 / 转账备注"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        <Button
+                          type="submit"
+                          disabled={activeManualRechargeForm.submitting}
+                          className="w-full rounded-2xl bg-white px-6 text-slate-950 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {activeManualRechargeForm.submitting ? "提交中..." : "我已付款，提交审核"}
+                        </Button>
+                        {activeManualRechargeForm.message ? (
+                          <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                            {activeManualRechargeForm.message}
+                          </div>
+                        ) : null}
+                        {activeManualRechargeForm.createdOrder ? (
+                          <div className="grid gap-3 rounded-2xl border border-white/10 bg-slate-900/70 p-4 text-sm sm:grid-cols-3">
+                            <div>
+                              <p className="text-slate-400">订单号</p>
+                              <p className="mt-2 break-all font-mono text-xs text-cyan-200">
+                                {activeManualRechargeForm.createdOrder.id}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-slate-400">到账金额</p>
+                              <p className="mt-2 text-lg font-black text-white">
+                                ￥{activeManualRechargeForm.createdOrder.amount.toFixed(2)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-slate-400">订单状态</p>
+                              <div className="mt-2">
+                                <OrderStatusBadge status={activeManualRechargeForm.createdOrder.status} />
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                      </form>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
           {activeDashboardTab === "orders" ? (
             <div id="orders" className="scroll-mt-28">
-              <SectionTitle label="Orders" title="订单记录" desc="查看充值订单状态，待支付订单可以继续提交付款信息。" />
-              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <SectionTitle
+                label={dashboardCopy.tabs.orders}
+                title={dashboardCopy.tabs.orders}
+                desc="View recharge order status and account balance update records."
+              />
+              <Card className="rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
+                  <div className="mb-5 grid gap-3 lg:grid-cols-[1.3fr_0.8fr_0.8fr]">
+                    <div>
+                      <label className="text-sm text-slate-300">搜索订单</label>
+                      <input
+                        value={orderSearch}
+                        onChange={(event) => setOrderSearch(event.target.value)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                        placeholder="订单号 / 支付备注 / PayPal / Stripe ID"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">状态筛选</label>
+                      <select
+                        value={orderStatusFilter}
+                        onChange={(event) => setOrderStatusFilter(event.target.value as DashboardOrderStatusFilter)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="all">全部状态</option>
+                        <option value="pending">待支付</option>
+                        <option value="submitted">待审核</option>
+                        <option value="paid">已通过</option>
+                        <option value="rejected">已拒绝</option>
+                        <option value="failed">支付失败</option>
+                        <option value="canceled">已取消</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">支付方式</label>
+                      <select
+                        value={orderPaymentFilter}
+                        onChange={(event) => setOrderPaymentFilter(event.target.value as DashboardPaymentFilter)}
+                        className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                      >
+                        <option value="all">全部方式</option>
+                        <option value="stripe">Stripe</option>
+                        <option value="paypal">PayPal</option>
+                        <option value="alipay_manual">支付宝</option>
+                        <option value="wechat_manual">微信</option>
+                        <option value="manual">手动</option>
+                      </select>
+                    </div>
+                  </div>
                   {orderMessage ? (
                     <div className="mb-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
                       {orderMessage}
                     </div>
                   ) : null}
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[860px] text-left text-sm">
+                    <table className="w-full min-w-[980px] table-fixed text-left text-sm">
                       <thead className="text-slate-400">
                         <tr className="border-b border-white/10">
-                          <th className="py-3">订单号</th>
-                          <th className="py-3">时间</th>
-                          <th className="py-3">金额</th>
-                          <th className="py-3">方式</th>
-                          <th className="py-3">状态</th>
-                          <th className="py-3">备注</th>
-                          <th className="py-3">操作</th>
+                          {dashboardUiText.ordersHeaders.map((header, index) => (
+                            <th
+                              key={header}
+                              className={`${index === dashboardUiText.ordersHeaders.length - 1 ? "w-[9%]" : ["w-[13%]", "w-[14%]", "w-[12%]", "w-[10%]", "w-[12%]", "w-[12%]", "w-[18%]"][index]} py-3 pr-3`}
+                            >
+                              {header}
+                            </th>
+                          ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {orders.map((order) => (
-                          <tr key={order.id} className="border-b border-white/5">
-                            <td className="py-3 pr-3 font-mono text-xs text-cyan-300">{order.id}</td>
-                            <td className="py-3 text-slate-300">{order.time}</td>
-                            <td className="py-3 text-slate-300">{formatOrderAmount(order.amount, order.method)}</td>
-                            <td className="py-3 text-slate-300">{formatOrderMethod(order.method)}</td>
-                            <td className="py-3">
-                              <OrderStatusBadge status={order.status} />
-                            </td>
-                            <td className="max-w-[220px] truncate py-3 text-slate-300">{order.note || "无"}</td>
-                            <td className="py-3">
-                              {order.method === "manual_transfer" && order.status === "pending" ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => void submitRechargePayment(order.id, "orders")}
-                                  disabled={submittingPaymentOrderId === order.id}
-                                  className="hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  {submittingPaymentOrderId === order.id ? "提交中..." : "我已付款"}
-                                </Button>
-                              ) : (
-                                <span className="text-slate-500">-</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                        {filteredOrders.map((order) => {
+                          const paymentMethod = order.paymentMethod || order.method;
+                          const paymentLabel = formatOrderMethod(paymentMethod);
+                          const reviewNote = order.reviewNote.trim();
+                          const orderNote = order.note.trim();
+                          const notes = [
+                            reviewNote ? { label: dashboardUiText.reviewNote, value: reviewNote } : null,
+                            orderNote ? { label: dashboardUiText.orderNote, value: orderNote } : null,
+                          ].filter((item): item is { label: string; value: string } => Boolean(item));
+                          const canSubmitManualPayment =
+                            ["manual", "manual_transfer", "alipay_manual", "wechat_manual"].includes(paymentMethod) &&
+                            order.status === "pending";
+
+                          return (
+                            <tr key={order.id} className="border-b border-white/5 align-top">
+                              <td className="py-3 pr-3">
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  <span className="truncate font-mono text-xs text-cyan-300" title={order.id}>
+                                    {formatCompactId(order.id, 8, 4)}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => void copy(order.id, dashboardUiText.copiedOrderId)}
+                                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition hover:border-cyan-300/40 hover:text-cyan-200"
+                                    aria-label={dashboardUiText.copyOrderId}
+                                    title={dashboardUiText.copyOrderId}
+                                  >
+                                    <Copy className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                <div className="font-semibold text-white">
+                                  {formatOrderCreditAmount(order.amount, paymentMethod, order.amountCny)}
+                                </div>
+                                {isUsdPaymentMethod(paymentMethod) ? (
+                                  <div className="mt-1 truncate text-xs text-slate-500" title={formatExchangeRate(paymentMethod, order.exchangeRate)}>
+                                    {formatOrderPaymentAmount(order.amount, paymentMethod, order.amountUsd)}
+                                  </div>
+                                ) : null}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                <span className="block truncate" title={paymentLabel}>
+                                  {paymentLabel}
+                                </span>
+                              </td>
+                              <td className="py-3 pr-3">
+                                <OrderStatusBadge status={order.status} />
+                              </td>
+                              <td className="py-3 pr-3 text-xs text-slate-300">{order.time}</td>
+                              <td className="py-3 pr-3 text-xs text-slate-300">{formatNullableDateTime(order.paidAt)}</td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {notes.length > 0 ? (
+                                  <div className="space-y-1">
+                                    {notes.map((note) => (
+                                      <p key={note.label} className="truncate text-xs" title={note.value}>
+                                        <span className="mr-1 text-slate-500">{note.label}</span>
+                                        {note.value}
+                                      </p>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-500">{dashboardUiText.none}</span>
+                                )}
+                              </td>
+                              <td className="py-3">
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => setSelectedOrder(order)}
+                                    className="h-8 rounded-lg px-2 text-xs hover:bg-white/10 hover:text-white"
+                                  >
+                                    详情
+                                  </Button>
+                                {canSubmitManualPayment ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => void submitRechargePayment(order.id, "orders")}
+                                    disabled={submittingPaymentOrderId === order.id}
+                                    className="h-8 rounded-lg px-2 text-xs hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {submittingPaymentOrderId === order.id ? dashboardUiText.submitting : dashboardUiText.paidSubmit}
+                                  </Button>
+                                ) : (
+                                  <span className="text-slate-500">-</span>
+                                )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
-                    {orders.length === 0 ? (
+                    {filteredOrders.length === 0 ? (
                       <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
-                        还没有订单记录。创建充值订单后，这里会显示审核进度。
+                        {orders.length === 0 ? dashboardUiText.noOrders : "暂无符合筛选条件的订单。"}
                       </div>
                     ) : null}
                   </div>
+                  {selectedOrder ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-slate-950/75 p-5">
+                      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm text-slate-400">订单详情</p>
+                          <h3 className="mt-1 break-all font-mono text-sm text-cyan-200">{selectedOrder.id}</h3>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setSelectedOrder(null)}
+                          className="hover:bg-white/10 hover:text-white"
+                        >
+                          关闭
+                        </Button>
+                      </div>
+                      <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">当前状态</p>
+                          <div className="mt-2"><OrderStatusBadge status={selectedOrder.status} /></div>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">支付方式</p>
+                          <p className="mt-2 text-white">{formatOrderMethod(selectedOrder.paymentMethod || selectedOrder.method)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">支付金额</p>
+                          <p className="mt-2 text-white">
+                            {formatOrderPaymentAmount(selectedOrder.amount, selectedOrder.paymentMethod || selectedOrder.method, selectedOrder.amountUsd)}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">到账金额</p>
+                          <p className="mt-2 text-white">
+                            {formatOrderCreditAmount(selectedOrder.amount, selectedOrder.paymentMethod || selectedOrder.method, selectedOrder.amountCny)}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">创建时间</p>
+                          <p className="mt-2 text-white">{selectedOrder.time}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">到账时间</p>
+                          <p className="mt-2 text-white">{formatNullableDateTime(selectedOrder.paidAt)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">汇率</p>
+                          <p className="mt-2 text-white">{formatExchangeRate(selectedOrder.paymentMethod || selectedOrder.method, selectedOrder.exchangeRate)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">支付渠道信息</p>
+                          <p className="mt-2 break-all font-mono text-xs text-white">
+                            {selectedOrder.stripeSessionId || selectedOrder.stripePaymentIntentId
+                              ? `Stripe Session: ${selectedOrder.stripeSessionId ?? "无"} / PI: ${selectedOrder.stripePaymentIntentId ?? "无"}`
+                              : selectedOrder.paypalOrderId || selectedOrder.paypalCaptureId
+                                ? `PayPal Order: ${selectedOrder.paypalOrderId ?? "无"} / Capture: ${selectedOrder.paypalCaptureId ?? "无"}`
+                              : "无"}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:col-span-2">
+                          <p className="text-slate-400">用户备注</p>
+                          <p className="mt-2 whitespace-pre-wrap text-white">{selectedOrder.note || "无"}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:col-span-2">
+                          <p className="text-slate-400">审核结果 / 管理员备注</p>
+                          <p className="mt-2 whitespace-pre-wrap text-white">{selectedOrder.reviewNote || "无"}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
             </div>
@@ -4033,8 +6811,12 @@ print(completion.choices[0].message.content)`;
 
           {activeDashboardTab === "docs" ? (
             <div id="docs" className="scroll-mt-28">
-              <SectionTitle label="Docs" title="API 文档" desc="给用户复制 base_url、API Key 和接入代码。" />
-              <Card className="rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <SectionTitle
+                label={dashboardCopy.tabs.docs}
+                title={dashboardCopy.tabs.docs}
+                desc="Copy the base URL, authorization format, and OpenAI-compatible request examples."
+              />
+              <Card className="rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="grid gap-4 md:grid-cols-3">
                     <div className="rounded-2xl bg-slate-950/60 p-4">
@@ -4042,39 +6824,39 @@ print(completion.choices[0].message.content)`;
                       <p className="mt-2 break-all font-mono text-cyan-300">{apiBaseUrl}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-950/60 p-4">
-                      <p className="text-sm text-slate-400">模型名</p>
+                      <p className="text-sm text-slate-400">{dashboardUiText.modelName}</p>
                       <p className="mt-2 font-mono text-cyan-300">{selectedModelName}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-950/60 p-4">
-                      <p className="text-sm text-slate-400">接口</p>
+                      <p className="text-sm text-slate-400">{dashboardUiText.endpoint}</p>
                       <p className="mt-2 font-mono text-cyan-300">/chat/completions</p>
                     </div>
                   </div>
                   <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm leading-6 text-slate-300">
-                    model 必须使用平台支持并启用的模型名，例如 <span className="font-mono text-cyan-300">deepseek-chat</span>。不同模型的输入和输出价格可能不同，实际扣费按上游返回的 usage 计算。
+                    {dashboardUiText.docsNotice}
                   </div>
                   <div className="mt-6 flex items-center justify-between gap-3">
-                    <h3 className="text-lg font-bold">JavaScript fetch 示例</h3>
-                    <Button onClick={() => copy(javascriptCode, "已复制 JavaScript 示例")} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                    <h3 className="text-lg font-bold">{dashboardUiText.jsExample}</h3>
+                    <Button onClick={() => copy(javascriptCode, dashboardUiText.copiedJs)} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
                       <Copy className="mr-2 h-4 w-4" />
-                      复制
+                      {dashboardUiText.copy}
                     </Button>
                   </div>
                   <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/80 p-5 text-sm leading-7 text-slate-200">
                     <code>{javascriptCode}</code>
                   </pre>
                   <div className="mt-6 flex items-center justify-between gap-3">
-                    <h3 className="text-lg font-bold">Python OpenAI SDK 示例</h3>
-                    <Button onClick={() => copy(pythonCode, "已复制 Python 示例")} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
+                    <h3 className="text-lg font-bold">{dashboardUiText.pythonExample}</h3>
+                    <Button onClick={() => copy(pythonCode, dashboardUiText.copiedPython)} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
                       <Copy className="mr-2 h-4 w-4" />
-                      复制
+                      {dashboardUiText.copy}
                     </Button>
                   </div>
                   <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/80 p-5 text-sm leading-7 text-slate-200">
                     <code>{pythonCode}</code>
                   </pre>
                   <div className="mt-6 rounded-2xl border border-white/10 bg-slate-950/60 p-5">
-                    <h3 className="text-lg font-bold">常见错误码</h3>
+                    <h3 className="text-lg font-bold">{dashboardUiText.errorCodes}</h3>
                     <div className="mt-4 grid gap-3 text-sm text-slate-300 md:grid-cols-2">
                       {[
                         ["400", "暂不支持 stream、请求超限，或 model not supported or disabled"],
@@ -4096,8 +6878,12 @@ print(completion.choices[0].message.content)`;
 
           {activeDashboardTab === "admin" && isAdmin ? (
             <div id="admin" className="scroll-mt-28">
-              <SectionTitle label="Admin" title="管理后台" desc="管理员人工处理充值，不接真实支付，不允许普通用户改余额。" />
-              <Card className="mb-6 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <SectionTitle
+                label={dashboardCopy.tabs.admin}
+                title={dashboardCopy.tabs.admin}
+                desc="Operational tools for administrators, including users, finance, suppliers, and review workflows."
+              />
+              <Card className="mb-6 rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5">
                     <h3 className="text-xl font-bold">人工充值</h3>
@@ -4134,7 +6920,7 @@ print(completion.choices[0].message.content)`;
                         value={manualRechargeNote}
                         onChange={(event) => setManualRechargeNote(event.target.value)}
                         className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
-                        placeholder="人工转账 / 测试额度"
+                        placeholder="人工调整 / 账户账单备注"
                       />
                     </div>
                     <Button
@@ -4152,7 +6938,7 @@ print(completion.choices[0].message.content)`;
                   ) : null}
                 </CardContent>
               </Card>
-              <Card id="recharge-review" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <Card id="recharge-review" className="mb-6 scroll-mt-28 rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -4161,15 +6947,68 @@ print(completion.choices[0].message.content)`;
                         审核用户手动转账订单。通过后订单变为 paid 并给用户余额加款；拒绝后不会增加余额。
                       </p>
                     </div>
-                    <Button
-                      type="button"
-                      onClick={() => void loadAdminRechargeOrders()}
-                      disabled={adminRechargeLoading}
-                      variant="outline"
-                      className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {adminRechargeLoading ? "刷新中..." : "刷新审核"}
-                    </Button>
+                    <div className="grid w-full gap-3 lg:grid-cols-[1fr_1fr_1fr_auto_auto_auto] lg:items-end">
+                      <div>
+                        <label className="text-xs text-slate-400">订单号</label>
+                        <input
+                          value={adminRechargeOrderSearch}
+                          onChange={(event) => setAdminRechargeOrderSearch(event.target.value)}
+                          className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-2.5 text-sm text-white outline-none focus:border-cyan-300"
+                          placeholder="订单号 / PayPal / Stripe ID"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400">邮箱</label>
+                        <input
+                          value={adminRechargeEmailSearch}
+                          onChange={(event) => setAdminRechargeEmailSearch(event.target.value)}
+                          className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-2.5 text-sm text-white outline-none focus:border-cyan-300"
+                          placeholder="user@example.com"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400">支付备注</label>
+                        <input
+                          value={adminRechargeNoteSearch}
+                          onChange={(event) => setAdminRechargeNoteSearch(event.target.value)}
+                          className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-2.5 text-sm text-white outline-none focus:border-cyan-300"
+                          placeholder="用户备注 / 审核备注"
+                        />
+                      </div>
+                      <select
+                        value={adminRechargeMethodFilter}
+                        onChange={(event) => setAdminRechargeMethodFilter(event.target.value as AdminRechargePaymentFilter)}
+                        className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-2.5 text-sm text-white outline-none focus:border-cyan-300"
+                        aria-label="支付方式筛选"
+                      >
+                        {adminRechargePaymentFilters.map((filter) => (
+                          <option key={filter.value} value={filter.value}>
+                            {filter.label}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={adminRechargeStatusFilter}
+                        onChange={(event) => setAdminRechargeStatusFilter(event.target.value as AdminRechargeStatusFilter)}
+                        className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-2.5 text-sm text-white outline-none focus:border-cyan-300"
+                        aria-label="订单状态筛选"
+                      >
+                        {adminRechargeStatusFilters.map((filter) => (
+                          <option key={filter.value} value={filter.value}>
+                            {filter.label}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        type="button"
+                        onClick={() => void loadAdminRechargeOrders()}
+                        disabled={adminRechargeLoading}
+                        variant="outline"
+                        className="rounded-2xl border-white/15 bg-white/5 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {adminRechargeLoading ? "刷新中..." : "刷新订单"}
+                      </Button>
+                    </div>
                   </div>
 
                   {adminRechargeMessage ? (
@@ -4179,68 +7018,301 @@ print(completion.choices[0].message.content)`;
                   ) : null}
 
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[980px] text-left text-sm">
+                    <table className="w-full min-w-[980px] table-fixed text-left text-xs">
                       <thead className="text-slate-400">
                         <tr className="border-b border-white/10">
-                          <th className="py-3">订单号</th>
-                          <th className="py-3">用户</th>
-                          <th className="py-3">金额</th>
-                          <th className="py-3">方式</th>
-                          <th className="py-3">状态</th>
-                          <th className="py-3">备注</th>
-                          <th className="py-3">创建时间</th>
-                          <th className="py-3">操作</th>
+                          <th className="w-[11%] py-2 pr-2">订单号</th>
+                          <th className="w-[14%] py-2 pr-2">用户</th>
+                          <th className="w-[7%] py-2 pr-2">金额</th>
+                          <th className="w-[9%] py-2 pr-2">方式</th>
+                          <th className="w-[8%] py-2 pr-2">状态</th>
+                          <th className="w-[12%] py-2 pr-2">渠道 ID</th>
+                          <th className="w-[10%] py-2 pr-2">备注</th>
+                          <th className="w-[13%] py-2 pr-2">审核备注</th>
+                          <th className="w-[8%] py-2 pr-2">创建时间</th>
+                          <th className="sticky right-0 z-10 w-[8%] bg-slate-950/95 py-2 pl-2 text-right">操作</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {adminRechargeOrders.map((order) => (
-                          <tr key={order.id} className="border-b border-white/5 align-top">
-                            <td className="py-3 pr-3 font-mono text-xs text-cyan-300">{order.id}</td>
-                            <td className="py-3 pr-3 font-mono text-xs text-slate-300">{order.user_email ?? order.user_id}</td>
-                            <td className="py-3 pr-3 text-slate-300">¥{Number(order.amount ?? 0).toFixed(2)}</td>
-                            <td className="py-3 pr-3 text-slate-300">{formatOrderMethod(order.method)}</td>
-                            <td className="py-3 pr-3">
-                              <OrderStatusBadge status={order.status} />
-                            </td>
-                            <td className="max-w-[240px] truncate py-3 pr-3 text-slate-300">{order.note ?? "无"}</td>
-                            <td className="py-3 pr-3 text-slate-300">{formatDateTime(order.created_at)}</td>
-                            <td className="py-3">
-                              <div className="flex flex-wrap gap-2">
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  disabled={reviewingRechargeOrderId === order.id}
-                                  onClick={() => void reviewRechargeOrderAdmin(order, "approve")}
-                                  className="text-emerald-200 hover:bg-emerald-300/10 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  通过
-                                </Button>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  disabled={reviewingRechargeOrderId === order.id}
-                                  onClick={() => void reviewRechargeOrderAdmin(order, "reject")}
-                                  className="text-rose-200 hover:bg-rose-300/10 hover:text-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  拒绝
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                        {adminRechargeVisibleOrders.map((order) => {
+                          const orderUser = order.user_email ?? order.user_id;
+                          const paymentMethod = order.payment_method ?? order.method;
+                          const paymentLabel = formatOrderMethod(paymentMethod);
+                          const isReviewable = ["pending", "submitted"].includes(order.status) && paymentMethod !== "stripe";
+                          const providerIds = [
+                            { label: "O", copyLabel: "PayPal order ID", value: order.paypal_order_id },
+                            { label: "C", copyLabel: "PayPal capture ID", value: order.paypal_capture_id },
+                            { label: "S", copyLabel: "Stripe session ID", value: order.stripe_session_id },
+                            { label: "PI", copyLabel: "Stripe payment intent ID", value: order.stripe_payment_intent_id },
+                          ].filter(
+                            (item): item is { label: string; copyLabel: string; value: string } => Boolean(item.value),
+                          );
+
+                          return (
+                            <tr key={order.id} className="border-b border-white/5 align-top">
+                              <td className="py-2 pr-2">
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  <span className="truncate font-mono text-[11px] text-cyan-300" title={order.id}>
+                                    {formatCompactId(order.id, 6, 4)}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => void copy(order.id, "订单号已复制")}
+                                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-500 transition hover:border-cyan-300/40 hover:text-cyan-200"
+                                    aria-label="复制完整订单号"
+                                    title="复制完整订单号"
+                                  >
+                                    <Copy className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="py-2 pr-2">
+                                <span className="block truncate font-mono text-[11px] text-slate-300" title={orderUser}>
+                                  {orderUser}
+                                </span>
+                              </td>
+                              <td className="whitespace-nowrap py-2 pr-2 text-slate-300">¥{Number(order.amount ?? 0).toFixed(2)}</td>
+                              <td className="py-2 pr-2 text-slate-300">
+                                <span className="block truncate" title={paymentLabel}>
+                                  {paymentLabel}
+                                </span>
+                              </td>
+                              <td className="py-2 pr-2">
+                                <OrderStatusBadge status={order.status} />
+                              </td>
+                              <td className="py-2 pr-2 text-slate-300">
+                                {providerIds.length > 0 ? (
+                                  <div className="space-y-1">
+                                    {providerIds.map((item) => (
+                                      <div key={item.label} className="flex min-w-0 items-center gap-1" title={item.value}>
+                                        <span className="w-3 shrink-0 text-[10px] text-slate-500">{item.label}</span>
+                                        <span className="truncate font-mono text-[11px] text-cyan-200">
+                                          {formatCompactId(item.value, 4, 4)}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => void copy(item.value, `${item.copyLabel} 已复制`)}
+                                          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-white/10 text-slate-500 transition hover:border-cyan-300/40 hover:text-cyan-200"
+                                          aria-label={`复制完整 ${item.copyLabel}`}
+                                          title={`复制完整 ${item.copyLabel}`}
+                                        >
+                                          <Copy className="h-2.5 w-2.5" />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-500">无</span>
+                                )}
+                              </td>
+                              <td className="py-2 pr-2 text-slate-300">
+                                <span className="block truncate" title={order.note ?? "无"}>
+                                  {order.note ?? "无"}
+                                </span>
+                              </td>
+                              <td className="py-2 pr-2">
+                                {isReviewable ? (
+                                  <input
+                                    value={reviewNoteByOrderId[order.id] ?? ""}
+                                    onChange={(event) =>
+                                      setReviewNoteByOrderId((current) => ({
+                                        ...current,
+                                        [order.id]: event.target.value,
+                                      }))
+                                    }
+                                    className="w-full max-w-[150px] rounded-lg border border-white/10 bg-slate-950/80 px-2 py-1.5 text-xs text-white outline-none focus:border-cyan-300"
+                                    placeholder="审核备注"
+                                  />
+                                ) : (
+                                  <span className="block max-w-[150px] truncate text-slate-300" title={order.review_note ?? "无"}>
+                                    {order.review_note ?? "无"}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="whitespace-nowrap py-2 pr-2 text-[11px] text-slate-300">{formatDateTime(order.created_at)}</td>
+                              <td className="sticky right-0 z-10 bg-slate-950/95 py-2 pl-2">
+                                <div className="flex justify-end gap-1">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => setSelectedAdminRechargeOrder(order)}
+                                    className="h-7 rounded-lg px-1.5 text-xs text-slate-200 hover:bg-white/10 hover:text-white"
+                                  >
+                                    详情
+                                  </Button>
+                                {isReviewable ? (
+                                  <>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="ghost"
+                                      disabled={reviewingRechargeOrderId === order.id}
+                                      onClick={() => void reviewRechargeOrderAdmin(order, "approve")}
+                                      className="h-7 rounded-lg px-1.5 text-xs text-emerald-200 hover:bg-emerald-300/10 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      通过
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="ghost"
+                                      disabled={reviewingRechargeOrderId === order.id}
+                                      onClick={() => void reviewRechargeOrderAdmin(order, "reject")}
+                                      className="h-7 rounded-lg px-1.5 text-xs text-rose-200 hover:bg-rose-300/10 hover:text-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      拒绝
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <span className="block text-right text-slate-500">
+                                    {paymentMethod === "stripe" && ["pending", "submitted"].includes(order.status)
+                                      ? "等 webhook"
+                                      : "已处理"}
+                                  </span>
+                                )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
-                    {adminRechargeOrders.length === 0 ? (
+                    {adminRechargeVisibleOrders.length === 0 ? (
                       <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-slate-400">
-                        {adminRechargeLoading ? "正在读取充值审核订单..." : "暂无待支付或待审核订单。"}
+                        {adminRechargeLoading ? "正在读取充值订单..." : "暂无符合条件的充值订单。"}
                       </div>
                     ) : null}
                   </div>
+                  {selectedAdminRechargeOrder ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-slate-950/75 p-5">
+                      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm text-slate-400">审核详情</p>
+                          <h4 className="mt-1 break-all font-mono text-sm text-cyan-200">
+                            {selectedAdminRechargeOrder.id}
+                          </h4>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setSelectedAdminRechargeOrder(null)}
+                          className="hover:bg-white/10 hover:text-white"
+                        >
+                          关闭
+                        </Button>
+                      </div>
+                      <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">用户</p>
+                          <p className="mt-2 break-all font-mono text-xs text-cyan-100">
+                            {selectedAdminRechargeOrder.user_email ?? selectedAdminRechargeOrder.user_id}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">支付方式</p>
+                          <p className="mt-2 text-white">
+                            {formatOrderMethod(selectedAdminRechargeOrder.payment_method ?? selectedAdminRechargeOrder.method)}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">金额</p>
+                          <p className="mt-2 text-white">
+                            {formatOrderCreditAmount(
+                              selectedAdminRechargeOrder.amount,
+                              selectedAdminRechargeOrder.payment_method ?? selectedAdminRechargeOrder.method,
+                              selectedAdminRechargeOrder.amount_cny
+                            )}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">当前状态</p>
+                          <div className="mt-2">
+                            <OrderStatusBadge status={selectedAdminRechargeOrder.status} />
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">提交时间</p>
+                          <p className="mt-2 text-white">{formatDateTime(selectedAdminRechargeOrder.created_at)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">到账时间</p>
+                          <p className="mt-2 text-white">{formatNullableDateTime(selectedAdminRechargeOrder.paid_at)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">审核时间</p>
+                          <p className="mt-2 text-white">{formatNullableDateTime(selectedAdminRechargeOrder.reviewed_at ?? null)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <p className="text-slate-400">支付金额 / 汇率</p>
+                          <p className="mt-2 text-white">
+                            {formatOrderPaymentAmount(
+                              selectedAdminRechargeOrder.amount,
+                              selectedAdminRechargeOrder.payment_method ?? selectedAdminRechargeOrder.method,
+                              selectedAdminRechargeOrder.amount_usd
+                            )}
+                            {" · "}
+                            {formatExchangeRate(
+                              selectedAdminRechargeOrder.payment_method ?? selectedAdminRechargeOrder.method,
+                              selectedAdminRechargeOrder.exchange_rate
+                            )}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 xl:col-span-2">
+                          <p className="text-slate-400">支付渠道信息</p>
+                          <p className="mt-2 break-all font-mono text-xs text-white">
+                            {selectedAdminRechargeOrder.stripe_session_id || selectedAdminRechargeOrder.stripe_payment_intent_id
+                              ? `Stripe Session: ${selectedAdminRechargeOrder.stripe_session_id ?? "无"} / PI: ${selectedAdminRechargeOrder.stripe_payment_intent_id ?? "无"}`
+                              : `PayPal Order: ${selectedAdminRechargeOrder.paypal_order_id ?? "无"} / Capture: ${selectedAdminRechargeOrder.paypal_capture_id ?? "无"}`}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 md:col-span-2">
+                          <p className="text-slate-400">用户填写的付款备注</p>
+                          <p className="mt-2 whitespace-pre-wrap text-white">{selectedAdminRechargeOrder.note ?? "无"}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 md:col-span-2">
+                          <p className="text-slate-400">管理员备注</p>
+                          <textarea
+                            value={reviewNoteByOrderId[selectedAdminRechargeOrder.id] ?? selectedAdminRechargeOrder.review_note ?? ""}
+                            onChange={(event) =>
+                              setReviewNoteByOrderId((current) => ({
+                                ...current,
+                                [selectedAdminRechargeOrder.id]: event.target.value,
+                              }))
+                            }
+                            className="mt-2 min-h-24 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none focus:border-cyan-300"
+                            placeholder="填写审核备注，例如到账流水、拒绝原因等"
+                          />
+                        </div>
+                      </div>
+                      {["pending", "submitted"].includes(selectedAdminRechargeOrder.status) &&
+                      (selectedAdminRechargeOrder.payment_method ?? selectedAdminRechargeOrder.method) !== "stripe" ? (
+                        <div className="mt-4 flex flex-wrap gap-3">
+                          <Button
+                            type="button"
+                            disabled={reviewingRechargeOrderId === selectedAdminRechargeOrder.id}
+                            onClick={() => void reviewRechargeOrderAdmin(selectedAdminRechargeOrder, "approve")}
+                            className="rounded-2xl bg-emerald-200 text-emerald-950 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            审核通过
+                          </Button>
+                          <Button
+                            type="button"
+                            disabled={reviewingRechargeOrderId === selectedAdminRechargeOrder.id}
+                            variant="outline"
+                            onClick={() => void reviewRechargeOrderAdmin(selectedAdminRechargeOrder, "reject")}
+                            className="rounded-2xl border-rose-300/30 bg-rose-400/10 text-rose-100 hover:bg-rose-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            审核拒绝
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
-              <Card id="users" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <Card id="users" className="mb-6 scroll-mt-28 rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -4489,6 +7561,21 @@ print(completion.choices[0].message.content)`;
                         </div>
                       ) : null}
 
+                      <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                        {[
+                          ["角色", selectedAdminUser.role],
+                          ["余额", `¥${selectedAdminUser.balance.toFixed(4)}`],
+                          ["API Key 数量", String(selectedAdminUser.apiKeyCount)],
+                          ["累计充值", `¥${selectedAdminUser.totalRecharge.toFixed(2)}`],
+                          ["累计消费", `¥${selectedAdminUser.totalSpend.toFixed(4)}`],
+                        ].map(([label, value]) => (
+                          <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                            <p className="text-xs text-slate-500">{label}</p>
+                            <p className="mt-2 text-sm font-semibold text-white">{value}</p>
+                          </div>
+                        ))}
+                      </div>
+
                       {!adminUserDetailLoading && adminUserDetailView === "apiKeys" ? (
                         <div className="overflow-x-auto">
                           <table className="w-full min-w-[620px] text-left text-sm">
@@ -4559,15 +7646,18 @@ print(completion.choices[0].message.content)`;
 
                       {!adminUserDetailLoading && adminUserDetailView === "orders" ? (
                         <div className="overflow-x-auto">
-                          <table className="w-full min-w-[760px] text-left text-sm">
+                          <table className="w-full min-w-[1080px] text-left text-sm">
                             <thead className="text-slate-400">
                               <tr className="border-b border-white/10">
                                 <th className="py-3">时间</th>
                                 <th className="py-3">订单号</th>
-                                <th className="py-3">金额</th>
+                                <th className="py-3">支付金额</th>
+                                <th className="py-3">到账金额</th>
+                                <th className="py-3">汇率</th>
                                 <th className="py-3">方式</th>
                                 <th className="py-3">状态</th>
                                 <th className="py-3">备注</th>
+                                <th className="py-3">审核备注</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -4575,12 +7665,19 @@ print(completion.choices[0].message.content)`;
                                 <tr key={order.id} className="border-b border-white/5">
                                   <td className="py-3 text-slate-300">{formatDateTime(order.created_at)}</td>
                                   <td className="py-3 font-mono text-xs text-cyan-300">{order.id}</td>
-                                  <td className="py-3 text-slate-300">{formatOrderAmount(order.amount, order.method)}</td>
-                                  <td className="py-3 text-slate-300">{formatOrderMethod(order.method)}</td>
+                                  <td className="py-3 text-slate-300">
+                                    {formatOrderPaymentAmount(order.amount, order.payment_method ?? order.method, order.amount_usd)}
+                                  </td>
+                                  <td className="py-3 text-slate-300">
+                                    {formatOrderCreditAmount(order.amount, order.payment_method ?? order.method, order.amount_cny)}
+                                  </td>
+                                  <td className="py-3 text-slate-300">{formatExchangeRate(order.payment_method ?? order.method, order.exchange_rate)}</td>
+                                  <td className="py-3 text-slate-300">{formatOrderMethod(order.payment_method ?? order.method)}</td>
                                   <td className="py-3">
                                     <OrderStatusBadge status={order.status ?? "pending"} />
                                   </td>
                                   <td className="py-3 text-slate-300">{order.note ?? "无"}</td>
+                                  <td className="py-3 text-slate-300">{order.review_note ?? "无"}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -4596,7 +7693,7 @@ print(completion.choices[0].message.content)`;
                   ) : null}
                 </CardContent>
               </Card>
-              <Card id="finance" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <Card id="finance" className="mb-6 scroll-mt-28 rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -4612,8 +7709,8 @@ print(completion.choices[0].message.content)`;
                         className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-2 text-sm text-white outline-none focus:border-cyan-300"
                       >
                         <option value="today">今天</option>
-                        <option value="7d">7 天</option>
-                        <option value="30d">30 天</option>
+                        <option value="week">本周</option>
+                        <option value="month">本月</option>
                         <option value="all">全部</option>
                       </select>
                       <Button
@@ -4644,7 +7741,7 @@ print(completion.choices[0].message.content)`;
                     {financeStatCards.map(([label, value, hint]) => (
                       <div
                         key={label}
-                        className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 shadow-[0_0_18px_rgba(34,211,238,0.06)]"
+                        className="rounded-lg border border-white/10 bg-slate-950/60 p-4"
                       >
                         <p className="text-sm text-slate-400">{label}</p>
                         <p className="mt-2 break-words text-2xl font-black text-cyan-200">{value}</p>
@@ -4678,6 +7775,39 @@ print(completion.choices[0].message.content)`;
                           <p className="mt-2 text-lg font-bold text-white">{value}</p>
                         </div>
                       ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-6 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                    <h4 className="mb-4 text-lg font-bold">按支付方式统计</h4>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[620px] text-left text-sm">
+                        <thead className="text-slate-400">
+                          <tr className="border-b border-white/10">
+                            <th className="py-3">支付方式</th>
+                            <th className="py-3">充值金额</th>
+                            <th className="py-3">订单数</th>
+                            <th className="py-3">成功</th>
+                            <th className="py-3">失败/拒绝</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {paymentMethodFinanceRankings.map((item) => (
+                            <tr key={`payment-${item.supplier_name ?? item.label}`} className="border-b border-white/5">
+                              <td className="py-3 pr-3 text-cyan-300">{formatOrderMethod(item.supplier_name ?? item.label)}</td>
+                              <td className="py-3 pr-3 text-slate-300">{formatMoney(item.total_amount, 2)}</td>
+                              <td className="py-3 pr-3 text-slate-300">{formatNumber(item.order_count)}</td>
+                              <td className="py-3 pr-3 text-emerald-300">{formatNumber(item.success_count)}</td>
+                              <td className="py-3 pr-3 text-amber-300">{formatNumber(item.failed_count)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {paymentMethodFinanceRankings.length === 0 ? (
+                        <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-400">
+                          暂无支付方式统计数据。
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -4812,11 +7942,13 @@ print(completion.choices[0].message.content)`;
                   <div className="mt-6 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
                     <h4 className="mb-4 text-lg font-bold">最近 20 条订单</h4>
                     <div className="overflow-x-auto">
-                      <table className="w-full min-w-[900px] text-left text-sm">
+                      <table className="w-full min-w-[1120px] text-left text-sm">
                         <thead className="text-slate-400">
                           <tr className="border-b border-white/10">
                             <th className="py-3">用户邮箱</th>
-                            <th className="py-3">金额</th>
+                            <th className="py-3">支付金额</th>
+                            <th className="py-3">到账金额</th>
+                            <th className="py-3">汇率</th>
                             <th className="py-3">method</th>
                             <th className="py-3">status</th>
                             <th className="py-3">note</th>
@@ -4827,8 +7959,14 @@ print(completion.choices[0].message.content)`;
                           {recentFinanceOrders.map((order) => (
                             <tr key={order.id} className="border-b border-white/5">
                               <td className="py-3 pr-3 font-mono text-cyan-300">{order.user_email ?? "unknown"}</td>
-                              <td className="py-3 pr-3 text-slate-300">{formatOrderAmount(order.amount, order.method)}</td>
-                              <td className="py-3 pr-3 text-slate-300">{formatOrderMethod(order.method)}</td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {formatOrderPaymentAmount(order.amount, order.payment_method ?? order.method, order.amount_usd)}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">
+                                {formatOrderCreditAmount(order.amount, order.payment_method ?? order.method, order.amount_cny)}
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">{formatExchangeRate(order.payment_method ?? order.method, order.exchange_rate)}</td>
+                              <td className="py-3 pr-3 text-slate-300">{formatOrderMethod(order.payment_method ?? order.method)}</td>
                               <td className="py-3 pr-3">
                                 <OrderStatusBadge status={order.status ?? "pending"} />
                               </td>
@@ -4847,7 +7985,7 @@ print(completion.choices[0].message.content)`;
                   </div>
                 </CardContent>
               </Card>
-              <Card id="errors" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <Card id="errors" className="mb-6 scroll-mt-28 rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -4883,7 +8021,7 @@ print(completion.choices[0].message.content)`;
                     {errorStatCards.map(([label, value, hint]) => (
                       <div
                         key={label}
-                        className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 shadow-[0_0_18px_rgba(34,211,238,0.06)]"
+                        className="rounded-lg border border-white/10 bg-slate-950/60 p-4"
                       >
                         <p className="text-sm text-slate-400">{label}</p>
                         <p className="mt-2 break-words text-2xl font-black text-cyan-200">{value}</p>
@@ -5134,7 +8272,7 @@ print(completion.choices[0].message.content)`;
                   </div>
                 </CardContent>
               </Card>
-              <Card id="suppliers" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <Card id="suppliers" className="mb-6 scroll-mt-28 rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -5457,7 +8595,7 @@ print(completion.choices[0].message.content)`;
                   </div>
                 </CardContent>
               </Card>
-              <Card id="model-pricing" className="mb-6 scroll-mt-28 rounded-3xl border-white/10 bg-white/[0.06] text-white">
+              <Card id="model-pricing" className="mb-6 scroll-mt-28 rounded-lg border-white/10 bg-white/[0.06] text-white">
                 <CardContent className="p-6">
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -5842,12 +8980,12 @@ print(completion.choices[0].message.content)`;
               </Card>
               <div className="grid gap-3 md:grid-cols-2">
                 {[
-                  ["monitoring", "系统监控", "后续展示 QPS、延迟、可用率和供应商健康状态。"],
+                  ["monitoring", "系统监控", "集中查看 QPS、延迟、可用率和供应商健康状态。"],
                 ].map(([id, title, desc]) => (
                   <div
                     id={id}
                     key={id}
-                    className="scroll-mt-28 rounded-2xl border border-white/10 bg-white/[0.045] p-4 text-white shadow-[0_0_18px_rgba(34,211,238,0.06)]"
+                    className="scroll-mt-28 rounded-lg border border-white/10 bg-white/[0.045] p-4 text-white"
                   >
                     <div className="flex items-start gap-3">
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-200">
@@ -5857,7 +8995,7 @@ print(completion.choices[0].message.content)`;
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="text-base font-bold">{title}</h3>
                           <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-0.5 text-xs text-amber-100">
-                            未完成
+                            运营能力
                           </span>
                         </div>
                         <p className="mt-2 text-sm leading-6 text-slate-400">{desc}</p>
@@ -5873,271 +9011,21 @@ print(completion.choices[0].message.content)`;
     );
   }
 
-  const navItems = ["功能", "模型", "价格", "接入代码", "安全"];
-  const features = [
-    {
-      icon: <KeyRound className="h-5 w-5" />,
-      title: "一键创建 API Key",
-      desc: "新手登录后即可生成密钥，支持限额、模型权限和 IP 白名单。",
-    },
-    {
-      icon: <Server className="h-5 w-5" />,
-      title: "统一模型网关",
-      desc: "兼容 OpenAI SDK，统一调用 OpenAI、Claude、Gemini、DeepSeek、Qwen。",
-    },
-    {
-      icon: <Wallet className="h-5 w-5" />,
-      title: "余额与用量明细",
-      desc: "按 token 计费，清楚展示每次请求的模型、消耗、延迟和状态。",
-    },
-    {
-      icon: <Gauge className="h-5 w-5" />,
-      title: "自动路由与重试",
-      desc: "根据延迟、失败率、成本和状态自动选择更稳定的上游线路。",
-    },
-    {
-      icon: <ShieldCheck className="h-5 w-5" />,
-      title: "隐私保护默认开启",
-      desc: "默认不保存完整 prompt 和 response，只保留必要计费与错误信息。",
-    },
-    {
-      icon: <Activity className="h-5 w-5" />,
-      title: "实时监控后台",
-      desc: "管理员可查看 QPS、错误率、成本、收入、模型状态和异常用户。",
-    },
-  ];
-
   return (
-    <div className="min-h-screen bg-slate-950 text-white">
-      {LoginDialog}
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute left-1/2 top-0 h-96 w-96 -translate-x-1/2 rounded-full bg-cyan-500/20 blur-3xl" />
-        <div className="absolute bottom-24 right-10 h-80 w-80 rounded-full bg-violet-500/20 blur-3xl" />
-      </div>
-
-      <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/75 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-          <a href="#" className="flex items-center gap-2">
-            <BrandMark />
-          </a>
-          <nav className="hidden items-center gap-8 md:flex">
-            {navItems.map((item) => (
-              <a key={item} href={`#${item}`} className="text-sm text-slate-300 hover:text-white">
-                {item}
-              </a>
-            ))}
-          </nav>
-          <div className="hidden items-center gap-3 md:flex">
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setAuthMode("login");
-                setAuthMessage("");
-                setLoginOpen(true);
-              }}
-              className="text-slate-200 hover:bg-white/10 hover:text-white"
-            >
-              登录
-            </Button>
-            <Button onClick={openDashboard} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
-              打开控制台
-            </Button>
-          </div>
-          <button className="md:hidden" onClick={() => setMenuOpen(!menuOpen)}>
-            {menuOpen ? <X /> : <Menu />}
-          </button>
-        </div>
-        {menuOpen ? (
-          <div className="border-t border-white/10 px-4 py-4 md:hidden">
-            <div className="flex flex-col gap-4">
-              {navItems.map((item) => (
-                <a key={item} href={`#${item}`} className="text-sm text-slate-300" onClick={() => setMenuOpen(false)}>
-                  {item}
-                </a>
-              ))}
-              <Button onClick={openDashboard} className="rounded-2xl bg-white text-slate-950 hover:bg-slate-200">
-                打开控制台
-              </Button>
-            </div>
-          </div>
-        ) : null}
-      </header>
-
-      <main className="relative z-10">
-        <section className="mx-auto grid max-w-7xl items-center gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:px-8 lg:py-28">
-          <motion.div initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
-            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-cyan-200">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
-              兼容 OpenAI SDK 的 AI API 聚合网关
-            </div>
-            <h1 className="max-w-3xl text-4xl font-black tracking-tight sm:text-6xl">
-              让新手也能轻松接入
-              <span className="block bg-gradient-to-r from-cyan-300 to-violet-300 bg-clip-text text-transparent">多模型 API 中转站</span>
-            </h1>
-            <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-300">
-              电鳗 eelapi 提供统一 Base URL、统一 API Key、统一账单和统一模型路由。用户只需要改一行配置，就能调用主流 AI 模型。
-            </p>
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Button
-                size="lg"
-                onClick={() => {
-                  setAuthMode("signup");
-                  setAuthMessage("");
-                  setLoginOpen(true);
-                }}
-                className="rounded-2xl bg-white px-7 text-slate-950 hover:bg-slate-200"
-              >
-                立即免费试用 <ArrowRight className="ml-2 h-4 w-4" />
-              </Button>
-              <Button size="lg" onClick={openDashboard} variant="outline" className="rounded-2xl border-white/15 bg-white/5 px-7 text-white hover:bg-white/10">
-                打开控制台
-              </Button>
-            </div>
-          </motion.div>
-
-          <motion.div initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.6, delay: 0.1 }}>
-            <Card className="overflow-hidden rounded-3xl border-white/10 bg-white/10 shadow-2xl backdrop-blur-xl">
-              <CardContent className="p-0">
-                <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-                  <div>
-                    <p className="text-sm font-semibold text-white">实时请求监控</p>
-                    <p className="text-xs text-slate-400">API Gateway / Live Overview</p>
-                  </div>
-                  <span className="rounded-full bg-emerald-400/15 px-3 py-1 text-xs text-emerald-300">正常运行</span>
-                </div>
-                <div className="grid gap-4 p-5 sm:grid-cols-2">
-                  {[
-                    ["今日请求", "128,430"],
-                    ["平均延迟", "1.24s"],
-                    ["成功率", "99.82%"],
-                    ["今日收入", "¥3,284"],
-                  ].map(([label, value]) => (
-                    <div key={label} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                      <p className="text-sm text-slate-400">{label}</p>
-                      <p className="mt-2 text-2xl font-bold text-white">{value}</p>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-        </section>
-
-        <section id="功能" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-          <SectionTitle label="核心功能" title="不是简单转发，而是完整 API 网关" desc="从用户注册、密钥管理、模型路由、计费扣费到日志监控，一套系统直接跑起来。" />
-          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-            {features.map((feature) => (
-              <Card key={feature.title} className="rounded-3xl border-white/10 bg-white/[0.06] text-white transition hover:bg-white/[0.09]">
-                <CardContent className="p-6">
-                  <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-slate-950">
-                    {feature.icon}
-                  </div>
-                  <h3 className="text-lg font-bold">{feature.title}</h3>
-                  <p className="mt-3 leading-7 text-slate-300">{feature.desc}</p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </section>
-
-        <section id="模型" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-6 sm:p-8">
-            <SectionTitle label="模型别名" title="让小白不用记复杂模型名" />
-            <div className="grid gap-4 lg:grid-cols-4">
-              {modelList.map((model) => (
-                <div key={model.name} className="rounded-2xl border border-white/10 bg-slate-950/60 p-5">
-                  <p className="font-mono text-sm text-cyan-300">{model.name}</p>
-                  <h3 className="mt-3 text-xl font-bold">{model.label}</h3>
-                  <p className="mt-2 text-sm text-slate-400">{model.provider}</p>
-                  <p className="mt-4 leading-7 text-slate-300">{model.desc}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section id="价格" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-          <div className="mb-10 text-center">
-            <p className="text-sm font-semibold text-cyan-300">价格方案</p>
-            <h2 className="mt-3 text-3xl font-bold sm:text-4xl">充值按量扣费，账单清清楚楚</h2>
-          </div>
-          <div className="grid gap-5 lg:grid-cols-3">
-            {[
-              ["体验版", "¥0", "适合新手测试接口", ["赠送少量测试额度", "基础模型可用", "在线测试台", "社区支持"]],
-              ["开发者版", "按量计费", "适合个人开发和小项目", ["完整 API Key 管理", "用量明细", "更高并发", "模型自动切换"]],
-              ["团队版", "定制", "适合团队和企业项目", ["团队余额", "成员权限", "专属线路", "账单导出"]],
-            ].map(([name, price, desc, items], index) => (
-              <Card key={String(name)} className={`rounded-3xl text-white ${index === 1 ? "border-cyan-300/50 bg-cyan-300/10" : "border-white/10 bg-white/[0.06]"}`}>
-                <CardContent className="p-7">
-                  <h3 className="text-xl font-bold">{String(name)}</h3>
-                  <p className="mt-2 text-slate-300">{String(desc)}</p>
-                  <div className="mt-6 text-4xl font-black">{String(price)}</div>
-                  <ul className="mt-6 space-y-3">
-                    {(items as string[]).map((item) => (
-                      <li key={item} className="flex items-center gap-3 text-slate-200">
-                        <Check className="h-4 w-4 text-emerald-300" />
-                        {item}
-                      </li>
-                    ))}
-                  </ul>
-                  <Button onClick={openDashboard} className={`mt-7 w-full rounded-2xl ${index === 1 ? "bg-white text-slate-950 hover:bg-slate-200" : "bg-white/10 text-white hover:bg-white/15"}`}>
-                    开始使用
-                  </Button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </section>
-
-        <section id="接入代码" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-          <div className="grid gap-8 lg:grid-cols-2 lg:items-center">
-            <div>
-              <SectionTitle label="接入代码" title="只改 base_url，即可开始调用" desc="平台兼容 OpenAI SDK。用户原来怎么调用 OpenAI，现在就怎么调用电鳗。" />
-            </div>
-            <Card className="overflow-hidden rounded-3xl border-white/10 bg-slate-900 text-white">
-              <CardContent className="p-0">
-                <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-                  <div className="flex items-center gap-2 text-sm text-slate-300">
-                    <Code2 className="h-4 w-4" /> Python 示例
-                  </div>
-                  <Button size="sm" variant="ghost" onClick={() => copy(pythonCode, "已复制接入代码")} className="text-slate-300 hover:bg-white/10 hover:text-white">
-                    <Copy className="mr-2 h-4 w-4" />复制
-                  </Button>
-                </div>
-                <pre className="overflow-x-auto p-5 text-sm leading-7 text-slate-200">
-                  <code>{pythonCode}</code>
-                </pre>
-              </CardContent>
-            </Card>
-          </div>
-        </section>
-
-        <section id="安全" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-          <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 to-white/[0.03] p-8 sm:p-10">
-            <div className="grid gap-8 lg:grid-cols-2 lg:items-center">
-              <div>
-                <SectionTitle
-                  label="安全与合规"
-                  title="生产版安全规划"
-                  desc="当前页面是本地演示版；正式上线前需要补齐鉴权、密钥存储、限流、审计和告警。"
-                />
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {["API Key 哈希保存", "上游 Key 加密存储", "默认不保存对话内容", "Redis 限流防刷", "Cloudflare WAF 防护", "异常消费自动提醒"].map((item) => (
-                  <div key={item} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                    <Check className="h-5 w-5 text-emerald-300" />
-                    <span className="text-slate-200">生产版：{item}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </section>
-      </main>
-
-      <footer className="relative z-10 border-t border-white/10 px-4 py-8 text-center text-sm text-slate-400 sm:px-6 lg:px-8">
-        © 2026 电鳗 eelapi. Built for developers and beginners.
-      </footer>
-    </div>
+    <MarketingHome
+      loginDialog={LoginDialog}
+      onLogin={() => {
+        setAuthMode("login");
+        setAuthMessage("");
+        setLoginOpen(true);
+      }}
+      onSignup={() => {
+        setAuthMode("signup");
+        setAuthMessage("");
+        setLoginOpen(true);
+      }}
+      onOpenDashboard={openDashboard}
+      onAskAi={requestAiChat}
+    />
   );
 }

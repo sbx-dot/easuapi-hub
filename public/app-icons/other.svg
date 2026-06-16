@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AI model">
+  <rect width="64" height="64" rx="18" fill="#F8FAFC"/>
+  <g fill="none" stroke="#475569" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke-width="4" d="M32 12 50 22v20L32 52 14 42V22L32 12Z"/>
+    <path stroke-width="3.5" d="M32 12v20l18-10M32 32 14 22M32 32v20"/>
+    <circle cx="32" cy="32" r="6" fill="#E0F2FE" stroke="#2563EB" stroke-width="3"/>
+  </g>
+</svg>

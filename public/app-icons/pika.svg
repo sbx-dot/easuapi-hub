@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Pika">
+  <defs>
+    <linearGradient id="pika-app-bg" x1="10" x2="54" y1="8" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FEF9C3"/>
+      <stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="url(#pika-app-bg)"/>
+  <path fill="#fff" d="m32 12 7 15 16 2-12 10.5L46 56l-14-8.2L18 56l3-16.5L9 29l16-2 7-15Z"/>
+</svg>

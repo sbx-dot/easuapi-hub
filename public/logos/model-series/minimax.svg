@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="MiniMax">
+  <defs>
+    <linearGradient id="minimax-bg" x1="7" x2="41" y1="7" y2="41" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE4E6"/>
+      <stop offset=".45" stop-color="#FB7185"/>
+      <stop offset="1" stop-color="#E11D48"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" rx="14" fill="url(#minimax-bg)"/>
+  <path fill="#fff" d="M11 15h8.3l4.7 7 4.7-7H37v18h-6V23.7L25.9 33h-3.8L17 23.7V33h-6V15Z"/>
+</svg>

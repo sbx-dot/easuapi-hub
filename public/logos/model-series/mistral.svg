@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48" role="img" aria-label="Mistral">
+  <path fill="#FFAF00" d="M10 12h8v8h-8zM26 12h8v8h-8zM42 12h8v8h-8z"/>
+  <path fill="#FF6F00" d="M18 20h8v8h-8zM34 20h8v8h-8z"/>
+  <path fill="#FF4500" d="M10 28h8v8h-8zM26 28h8v8h-8zM42 28h8v8h-8z"/>
+  <text x="62" y="31" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="760" letter-spacing="-.35">Mistral</text>
+</svg>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Gemini model icon">
+  <defs>
+    <linearGradient id="gemini-star-a" x1="13" x2="51" y1="13" y2="51" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4285F4"/>
+      <stop offset=".35" stop-color="#34A853"/>
+      <stop offset=".62" stop-color="#FBBC05"/>
+      <stop offset="1" stop-color="#EA4335"/>
+    </linearGradient>
+    <linearGradient id="gemini-star-b" x1="20" x2="44" y1="44" y2="20" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#gemini-star-a)" d="M32 8c3.5 12.6 10.9 20 24 24-13.1 4-20.5 11.4-24 24-3.5-12.6-10.9-20-24-24 13.1-4 20.5-11.4 24-24Z"/>
+  <path fill="url(#gemini-star-b)" d="M32 18c2.1 6.9 6.8 11.6 14 14-7.2 2.4-11.9 7.1-14 14-2.1-6.9-6.8-11.6-14-14 7.2-2.4 11.9-7.1 14-14Z"/>
+</svg>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48" role="img" aria-label="OpenAI">
+  <g fill="#111827">
+    <path d="M24 7.5c-8.8 0-16 7.2-16 16s7.2 16 16 16 16-7.2 16-16-7.2-16-16-16Zm0 5.2a10.8 10.8 0 1 1 0 21.6 10.8 10.8 0 0 1 0-21.6Z"/>
+    <path d="M24 15.1a8.4 8.4 0 0 0-7.3 4.2l4.4 2.6a3.3 3.3 0 0 1 5.8 0l4.4-2.6a8.4 8.4 0 0 0-7.3-4.2Zm-7.3 12.6a8.4 8.4 0 0 0 14.6 0l-4.4-2.6a3.3 3.3 0 0 1-5.8 0l-4.4 2.6Z"/>
+    <text x="50" y="31" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="-.3">OpenAI</text>
+  </g>
+</svg>

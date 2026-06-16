@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48" role="img" aria-label="Anthropic">
+  <g fill="none" fill-rule="evenodd">
+    <path fill="#111827" d="M11 37 24 10h7l13 27h-7.5l-2.5-5.8H21L18.5 37H11Zm12.5-11.8h8L27.5 16l-4 9.2Z"/>
+    <path fill="#D97706" d="M22 35.5h11l2.1 5H19.9l2.1-5Z"/>
+    <text x="52" y="31" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="21" font-weight="700" letter-spacing="-.2">Anthropic</text>
+  </g>
+</svg>

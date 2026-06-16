@@ -23,16 +23,28 @@ create table if not exists public.orders (
   user_id uuid not null references auth.users(id) on delete cascade,
   amount numeric not null,
   method text not null,
+  payment_method text,
   status text not null default 'pending',
   note text,
   created_at timestamptz not null default now(),
   paid_at timestamptz,
   paypal_order_id text,
-  paypal_capture_id text
+  paypal_capture_id text,
+  amount_usd numeric,
+  amount_cny numeric,
+  exchange_rate numeric,
+  currency text,
+  stripe_session_id text,
+  stripe_payment_intent_id text,
+  webhook_event_id text,
+  provider_response jsonb
 );
 
 alter table public.orders
 add column if not exists note text;
+
+alter table public.orders
+add column if not exists payment_method text;
 
 alter table public.orders
 add column if not exists paid_at timestamptz;
@@ -42,6 +54,39 @@ add column if not exists paypal_order_id text;
 
 alter table public.orders
 add column if not exists paypal_capture_id text;
+
+alter table public.orders
+add column if not exists amount_usd numeric;
+
+alter table public.orders
+add column if not exists amount_cny numeric;
+
+alter table public.orders
+add column if not exists exchange_rate numeric;
+
+alter table public.orders
+add column if not exists currency text;
+
+alter table public.orders
+add column if not exists stripe_session_id text;
+
+alter table public.orders
+add column if not exists stripe_payment_intent_id text;
+
+alter table public.orders
+add column if not exists webhook_event_id text;
+
+alter table public.orders
+add column if not exists provider_response jsonb;
+
+alter table public.orders
+add column if not exists review_note text;
+
+alter table public.orders
+add column if not exists reviewed_at timestamptz;
+
+alter table public.orders
+add column if not exists reviewed_by uuid references auth.users(id) on delete set null;
 
 create table if not exists public.usage_logs (
   id uuid primary key default gen_random_uuid(),
@@ -138,12 +183,88 @@ add column if not exists input_cost_per_1k numeric not null default 0;
 alter table public.models
 add column if not exists output_cost_per_1k numeric not null default 0;
 
+create table if not exists public.recharge_records (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid not null unique references public.orders(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  amount numeric not null,
+  amount_usd numeric,
+  amount_cny numeric,
+  currency text,
+  payment_method text not null,
+  status text not null,
+  provider_reference text,
+  meta jsonb,
+  created_at timestamptz not null default now(),
+  paid_at timestamptz
+);
+
+create table if not exists public.payment_logs (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid references public.orders(id) on delete set null,
+  user_id uuid references auth.users(id) on delete set null,
+  provider text not null,
+  provider_event_id text unique,
+  event_type text not null,
+  status text not null,
+  amount numeric,
+  currency text,
+  provider_response jsonb,
+  created_at timestamptz not null default now()
+);
+
+alter table public.recharge_records
+add column if not exists amount_usd numeric;
+
+alter table public.recharge_records
+add column if not exists amount_cny numeric;
+
+alter table public.recharge_records
+add column if not exists currency text;
+
+alter table public.recharge_records
+add column if not exists provider_reference text;
+
+alter table public.recharge_records
+add column if not exists meta jsonb;
+
+alter table public.recharge_records
+add column if not exists paid_at timestamptz;
+
+alter table public.payment_logs
+add column if not exists provider_response jsonb;
+
+alter table public.payment_logs
+add column if not exists amount numeric;
+
+alter table public.payment_logs
+add column if not exists currency text;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'payment_logs_provider_event_id_key'
+      and conrelid = 'public.payment_logs'::regclass
+  ) then
+    alter table public.payment_logs
+    add constraint payment_logs_provider_event_id_key unique (provider_event_id);
+  end if;
+end;
+$$;
+
 create index if not exists api_keys_user_id_idx on public.api_keys(user_id);
 create index if not exists api_keys_user_id_revoked_idx on public.api_keys(user_id, revoked);
 create unique index if not exists api_keys_key_hash_idx on public.api_keys(key_hash);
 create index if not exists orders_user_id_idx on public.orders(user_id);
 create index if not exists orders_status_created_at_idx on public.orders(status, created_at);
+create index if not exists orders_payment_method_status_idx on public.orders(payment_method, status);
+create index if not exists orders_created_at_idx on public.orders(created_at desc);
 create unique index if not exists orders_paypal_order_id_idx on public.orders(paypal_order_id) where paypal_order_id is not null;
+create unique index if not exists orders_stripe_session_id_idx on public.orders(stripe_session_id) where stripe_session_id is not null;
+create unique index if not exists orders_stripe_payment_intent_id_idx on public.orders(stripe_payment_intent_id) where stripe_payment_intent_id is not null;
+create unique index if not exists orders_webhook_event_id_idx on public.orders(webhook_event_id) where webhook_event_id is not null;
 create index if not exists usage_logs_user_id_idx on public.usage_logs(user_id);
 create index if not exists usage_logs_supplier_name_idx on public.usage_logs(supplier_name);
 create index if not exists usage_logs_api_key_id_idx on public.usage_logs(api_key_id);
@@ -153,6 +274,10 @@ create index if not exists usage_logs_error_code_idx on public.usage_logs(error_
 create index if not exists suppliers_enabled_priority_idx on public.suppliers(enabled, priority);
 create index if not exists models_enabled_sort_order_idx on public.models(enabled, sort_order);
 create index if not exists models_supplier_name_idx on public.models(supplier_name);
+create index if not exists recharge_records_user_id_created_at_idx on public.recharge_records(user_id, created_at desc);
+create index if not exists recharge_records_payment_method_status_idx on public.recharge_records(payment_method, status);
+create index if not exists payment_logs_order_id_idx on public.payment_logs(order_id);
+create index if not exists payment_logs_provider_created_at_idx on public.payment_logs(provider, created_at desc);
 
 alter table public.profiles enable row level security;
 alter table public.api_keys enable row level security;
@@ -160,6 +285,8 @@ alter table public.orders enable row level security;
 alter table public.usage_logs enable row level security;
 alter table public.suppliers enable row level security;
 alter table public.models enable row level security;
+alter table public.recharge_records enable row level security;
+alter table public.payment_logs enable row level security;
 
 revoke all on table public.profiles from anon, authenticated;
 revoke all on table public.api_keys from anon, authenticated;
@@ -167,6 +294,8 @@ revoke all on table public.orders from anon, authenticated;
 revoke all on table public.usage_logs from anon, authenticated;
 revoke all on table public.suppliers from anon, authenticated;
 revoke all on table public.models from anon, authenticated;
+revoke all on table public.recharge_records from anon, authenticated;
+revoke all on table public.payment_logs from anon, authenticated;
 
 grant select on table public.profiles to authenticated;
 grant select on table public.api_keys to authenticated;
@@ -174,6 +303,8 @@ grant insert (user_id, name, key_prefix, key_hash) on table public.api_keys to a
 grant update (revoked) on table public.api_keys to authenticated;
 grant select on table public.orders to authenticated;
 grant select on table public.usage_logs to authenticated;
+grant select on table public.recharge_records to authenticated;
+grant select on table public.payment_logs to authenticated;
 grant select (
   id,
   name,
@@ -341,18 +472,32 @@ set
   description = excluded.description,
   sort_order = excluded.sort_order;
 
+update public.orders
+set payment_method = case
+  when method = 'paypal' then 'paypal'
+  when method = 'manual_transfer' then 'manual'
+  when method = 'alipay_manual' then 'alipay_manual'
+  when method = 'wechat_manual' then 'wechat_manual'
+  when method = 'manual' then 'manual'
+  else method
+end
+where payment_method is null;
+
 drop function if exists public.manual_recharge(text, numeric, text);
 
 drop function if exists public.create_recharge_order(numeric, text);
+drop function if exists public.create_recharge_order(numeric, text, text);
 create or replace function public.create_recharge_order(
   recharge_amount numeric,
-  recharge_note text default null
+  recharge_note text default null,
+  recharge_payment_method text default 'manual'
 )
 returns table (
   id uuid,
   user_id uuid,
   amount numeric,
   method text,
+  payment_method text,
   status text,
   note text,
   created_at timestamptz,
@@ -366,6 +511,8 @@ declare
   actor_id uuid := auth.uid();
   actor_role text;
   inserted_order public.orders%rowtype;
+  normalized_payment_method text;
+  normalized_amount numeric;
 begin
   if actor_id is null then
     raise exception 'not authenticated';
@@ -380,13 +527,51 @@ begin
     raise exception 'User profile not found';
   end if;
 
-  if recharge_amount is null or recharge_amount <= 0 then
-    raise exception 'Recharge amount must be greater than 0';
+  if recharge_amount is null or recharge_amount <= 0 or recharge_amount > 50000 then
+    raise exception 'Recharge amount must be greater than 0 and no more than 50000';
   end if;
 
-  insert into public.orders (user_id, amount, method, status, note)
-  values (actor_id, recharge_amount, 'manual_transfer', 'pending', nullif(btrim(coalesce(recharge_note, '')), ''))
-  returning * into inserted_order;
+  normalized_amount := round(recharge_amount::numeric, 2);
+
+  if normalized_amount <> recharge_amount then
+    raise exception 'Recharge amount can have at most 2 decimal places';
+  end if;
+
+  normalized_payment_method := coalesce(nullif(btrim(recharge_payment_method), ''), 'manual');
+
+  if normalized_payment_method not in ('manual', 'alipay_manual', 'wechat_manual') then
+    raise exception 'Unsupported manual recharge payment method';
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtext(actor_id::text),
+    hashtext(normalized_payment_method || ':' || normalized_amount::text)
+  );
+
+  select *
+  into inserted_order
+  from public.orders
+  where orders.user_id = actor_id
+    and orders.amount = normalized_amount
+    and coalesce(orders.payment_method, orders.method) = normalized_payment_method
+    and orders.status in ('pending', 'submitted')
+    and orders.created_at >= now() - interval '2 minutes'
+  order by orders.created_at desc
+  limit 1
+  for update;
+
+  if inserted_order.id is null then
+    insert into public.orders (user_id, amount, method, payment_method, status, note)
+    values (
+      actor_id,
+      normalized_amount,
+      normalized_payment_method,
+      normalized_payment_method,
+      'submitted',
+      nullif(btrim(coalesce(recharge_note, '')), '')
+    )
+    returning * into inserted_order;
+  end if;
 
   return query
   select
@@ -394,6 +579,7 @@ begin
     inserted_order.user_id,
     inserted_order.amount,
     inserted_order.method,
+    coalesce(inserted_order.payment_method, inserted_order.method),
     inserted_order.status,
     inserted_order.note,
     inserted_order.created_at,
@@ -401,8 +587,8 @@ begin
 end;
 $$;
 
-revoke all on function public.create_recharge_order(numeric, text) from public;
-grant execute on function public.create_recharge_order(numeric, text) to authenticated;
+revoke all on function public.create_recharge_order(numeric, text, text) from public;
+grant execute on function public.create_recharge_order(numeric, text, text) to authenticated;
 
 drop function if exists public.submit_recharge_order(uuid);
 create or replace function public.submit_recharge_order(target_order_id uuid)
@@ -411,6 +597,7 @@ returns table (
   user_id uuid,
   amount numeric,
   method text,
+  payment_method text,
   status text,
   note text,
   created_at timestamptz,
@@ -424,6 +611,7 @@ declare
   actor_id uuid := auth.uid();
   actor_role text;
   target_order public.orders%rowtype;
+  normalized_payment_method text;
 begin
   if actor_id is null then
     raise exception 'not authenticated';
@@ -449,8 +637,24 @@ begin
     raise exception 'Order not found';
   end if;
 
-  if target_order.method <> 'manual_transfer' then
+  normalized_payment_method := coalesce(
+    target_order.payment_method,
+    case
+      when target_order.method = 'manual_transfer' then 'manual'
+      else target_order.method
+    end
+  );
+
+  if normalized_payment_method not in ('manual', 'alipay_manual', 'wechat_manual') then
     raise exception 'Only manual transfer orders can be submitted';
+  end if;
+
+  if target_order.amount is null or target_order.amount <= 0 or target_order.amount > 50000 then
+    raise exception 'Order amount must be greater than 0 and no more than 50000';
+  end if;
+
+  if round(target_order.amount::numeric, 2) <> target_order.amount then
+    raise exception 'Order amount can have at most 2 decimal places';
   end if;
 
   if target_order.status = 'paid' then
@@ -478,6 +682,7 @@ begin
     target_order.user_id,
     target_order.amount,
     target_order.method,
+    normalized_payment_method,
     target_order.status,
     target_order.note,
     target_order.created_at,
@@ -489,17 +694,37 @@ revoke all on function public.submit_recharge_order(uuid) from public;
 grant execute on function public.submit_recharge_order(uuid) to authenticated;
 
 drop function if exists public.list_recharge_orders_admin();
-create or replace function public.list_recharge_orders_admin()
+drop function if exists public.list_recharge_orders_admin(text);
+drop function if exists public.list_recharge_orders_admin(text, text, text, text, integer);
+create or replace function public.list_recharge_orders_admin(
+  payment_method_filter text default 'all',
+  status_filter text default 'pending_submitted',
+  search_order text default null,
+  search_email text default null,
+  limit_count integer default 100
+)
 returns table (
   id uuid,
   user_id uuid,
   user_email text,
   amount numeric,
   method text,
+  payment_method text,
   status text,
   note text,
+  review_note text,
   created_at timestamptz,
-  paid_at timestamptz
+  paid_at timestamptz,
+  reviewed_at timestamptz,
+  paypal_order_id text,
+  paypal_capture_id text,
+  stripe_session_id text,
+  stripe_payment_intent_id text,
+  amount_usd numeric,
+  amount_cny numeric,
+  exchange_rate numeric,
+  currency text,
+  webhook_event_id text
 )
 language plpgsql
 security definer
@@ -516,39 +741,95 @@ begin
   end if;
 
   return query
+  with review_orders as (
+    select
+      orders.*,
+      coalesce(
+        orders.payment_method,
+        case
+          when orders.method = 'manual_transfer' then 'manual'
+          else orders.method
+        end
+      ) as normalized_payment_method
+    from public.orders
+  )
   select
-    orders.id,
-    orders.user_id,
+    review_orders.id,
+    review_orders.user_id,
     profiles.email,
-    orders.amount,
-    orders.method,
-    orders.status,
-    orders.note,
-    orders.created_at,
-    orders.paid_at
-  from public.orders
-  left join public.profiles on profiles.id = orders.user_id
-  where orders.method = 'manual_transfer'
-    and orders.status in ('pending', 'submitted')
-  order by orders.created_at asc;
+    review_orders.amount,
+    review_orders.method,
+    review_orders.normalized_payment_method,
+    review_orders.status,
+    review_orders.note,
+    review_orders.review_note,
+    review_orders.created_at,
+    review_orders.paid_at,
+    review_orders.reviewed_at,
+    review_orders.paypal_order_id,
+    review_orders.paypal_capture_id,
+    review_orders.stripe_session_id,
+    review_orders.stripe_payment_intent_id,
+    review_orders.amount_usd,
+    review_orders.amount_cny,
+    review_orders.exchange_rate,
+    review_orders.currency,
+    review_orders.webhook_event_id
+  from review_orders
+  left join public.profiles on profiles.id = review_orders.user_id
+  where review_orders.normalized_payment_method in ('manual', 'alipay_manual', 'wechat_manual', 'paypal', 'stripe')
+    and (
+      coalesce(nullif(payment_method_filter, ''), 'all') = 'all'
+      or review_orders.normalized_payment_method = payment_method_filter
+      or (payment_method_filter = 'manual' and review_orders.method = 'manual_transfer')
+    )
+    and (
+      coalesce(nullif(status_filter, ''), 'pending_submitted') in ('pending_submitted', 'reviewing')
+        and review_orders.status in ('pending', 'submitted')
+      or coalesce(nullif(status_filter, ''), 'pending_submitted') = 'all'
+      or review_orders.status = status_filter
+    )
+    and (
+      nullif(btrim(search_order), '') is null
+      or review_orders.id::text ilike '%' || btrim(search_order) || '%'
+      or coalesce(review_orders.paypal_order_id, '') ilike '%' || btrim(search_order) || '%'
+      or coalesce(review_orders.paypal_capture_id, '') ilike '%' || btrim(search_order) || '%'
+      or coalesce(review_orders.stripe_session_id, '') ilike '%' || btrim(search_order) || '%'
+      or coalesce(review_orders.stripe_payment_intent_id, '') ilike '%' || btrim(search_order) || '%'
+    )
+    and (
+      nullif(btrim(search_email), '') is null
+      or profiles.email ilike '%' || btrim(search_email) || '%'
+    )
+  order by
+    case when review_orders.status in ('pending', 'submitted') then 0 else 1 end,
+    review_orders.created_at desc
+  limit greatest(1, least(coalesce(limit_count, 100), 300));
 end;
 $$;
 
-revoke all on function public.list_recharge_orders_admin() from public;
-grant execute on function public.list_recharge_orders_admin() to authenticated;
+revoke all on function public.list_recharge_orders_admin(text, text, text, text, integer) from public;
+grant execute on function public.list_recharge_orders_admin(text, text, text, text, integer) to authenticated;
 
 drop function if exists public.approve_recharge_order_admin(uuid);
-create or replace function public.approve_recharge_order_admin(target_order_id uuid)
+drop function if exists public.approve_recharge_order_admin(uuid, text);
+create or replace function public.approve_recharge_order_admin(
+  target_order_id uuid,
+  admin_review_note text default null
+)
 returns table (
   id uuid,
   user_id uuid,
   user_email text,
   amount numeric,
   method text,
+  payment_method text,
   status text,
   note text,
+  review_note text,
   created_at timestamptz,
-  paid_at timestamptz
+  paid_at timestamptz,
+  reviewed_at timestamptz
 )
 language plpgsql
 security definer
@@ -558,6 +839,9 @@ declare
   target_order public.orders%rowtype;
   updated_order public.orders%rowtype;
   target_email text;
+  normalized_payment_method text;
+  credit_amount numeric;
+  normalized_review_note text;
 begin
   if not exists (
     select 1
@@ -578,9 +862,13 @@ begin
     raise exception 'Order not found';
   end if;
 
-  if target_order.method <> 'manual_transfer' then
-    raise exception 'Only manual transfer orders can be approved here';
-  end if;
+  normalized_payment_method := coalesce(
+    target_order.payment_method,
+    case
+      when target_order.method = 'manual_transfer' then 'manual'
+      else target_order.method
+    end
+  );
 
   if target_order.status = 'paid' then
     raise exception 'Order already paid';
@@ -594,8 +882,27 @@ begin
     raise exception 'Order cannot be approved';
   end if;
 
+  if normalized_payment_method not in ('manual', 'alipay_manual', 'wechat_manual', 'paypal') then
+    raise exception 'Order cannot be approved here';
+  end if;
+
+  credit_amount := case
+    when normalized_payment_method = 'paypal' then coalesce(target_order.amount_cny, target_order.amount)
+    else target_order.amount
+  end;
+
+  if credit_amount is null or credit_amount <= 0 or credit_amount > 50000 then
+    raise exception 'Order amount must be greater than 0 and no more than 50000';
+  end if;
+
+  if round(credit_amount::numeric, 2) <> credit_amount then
+    raise exception 'Order amount can have at most 2 decimal places';
+  end if;
+
+  normalized_review_note := nullif(btrim(coalesce(admin_review_note, '')), '');
+
   update public.profiles
-  set balance = balance + target_order.amount
+  set balance = balance + credit_amount
   where profiles.id = target_order.user_id
   returning profiles.email into target_email;
 
@@ -606,7 +913,12 @@ begin
   update public.orders
   set
     status = 'paid',
-    note = 'admin approved',
+    amount = credit_amount,
+    amount_cny = case when normalized_payment_method = 'paypal' then credit_amount else amount_cny end,
+    payment_method = normalized_payment_method,
+    review_note = normalized_review_note,
+    reviewed_at = now(),
+    reviewed_by = auth.uid(),
     paid_at = now()
   where orders.id = target_order.id
   returning * into updated_order;
@@ -618,28 +930,38 @@ begin
     target_email,
     updated_order.amount,
     updated_order.method,
+    normalized_payment_method,
     updated_order.status,
     updated_order.note,
+    updated_order.review_note,
     updated_order.created_at,
-    updated_order.paid_at;
+    updated_order.paid_at,
+    updated_order.reviewed_at;
 end;
 $$;
 
-revoke all on function public.approve_recharge_order_admin(uuid) from public;
-grant execute on function public.approve_recharge_order_admin(uuid) to authenticated;
+revoke all on function public.approve_recharge_order_admin(uuid, text) from public;
+grant execute on function public.approve_recharge_order_admin(uuid, text) to authenticated;
 
 drop function if exists public.reject_recharge_order_admin(uuid);
-create or replace function public.reject_recharge_order_admin(target_order_id uuid)
+drop function if exists public.reject_recharge_order_admin(uuid, text);
+create or replace function public.reject_recharge_order_admin(
+  target_order_id uuid,
+  admin_review_note text default null
+)
 returns table (
   id uuid,
   user_id uuid,
   user_email text,
   amount numeric,
   method text,
+  payment_method text,
   status text,
   note text,
+  review_note text,
   created_at timestamptz,
-  paid_at timestamptz
+  paid_at timestamptz,
+  reviewed_at timestamptz
 )
 language plpgsql
 security definer
@@ -649,6 +971,8 @@ declare
   target_order public.orders%rowtype;
   updated_order public.orders%rowtype;
   target_email text;
+  normalized_payment_method text;
+  normalized_review_note text;
 begin
   if not exists (
     select 1
@@ -669,9 +993,13 @@ begin
     raise exception 'Order not found';
   end if;
 
-  if target_order.method <> 'manual_transfer' then
-    raise exception 'Only manual transfer orders can be rejected here';
-  end if;
+  normalized_payment_method := coalesce(
+    target_order.payment_method,
+    case
+      when target_order.method = 'manual_transfer' then 'manual'
+      else target_order.method
+    end
+  );
 
   if target_order.status = 'paid' then
     raise exception 'Order already paid';
@@ -685,6 +1013,12 @@ begin
     raise exception 'Order cannot be rejected';
   end if;
 
+  if normalized_payment_method not in ('manual', 'alipay_manual', 'wechat_manual', 'paypal') then
+    raise exception 'Order cannot be rejected here';
+  end if;
+
+  normalized_review_note := nullif(btrim(coalesce(admin_review_note, '')), '');
+
   select profiles.email
   into target_email
   from public.profiles
@@ -693,7 +1027,10 @@ begin
   update public.orders
   set
     status = 'rejected',
-    note = 'admin rejected'
+    payment_method = normalized_payment_method,
+    review_note = normalized_review_note,
+    reviewed_at = now(),
+    reviewed_by = auth.uid()
   where orders.id = target_order.id
   returning * into updated_order;
 
@@ -704,20 +1041,25 @@ begin
     target_email,
     updated_order.amount,
     updated_order.method,
+    normalized_payment_method,
     updated_order.status,
     updated_order.note,
+    updated_order.review_note,
     updated_order.created_at,
-    updated_order.paid_at;
+    updated_order.paid_at,
+    updated_order.reviewed_at;
 end;
 $$;
 
-revoke all on function public.reject_recharge_order_admin(uuid) from public;
-grant execute on function public.reject_recharge_order_admin(uuid) to authenticated;
+revoke all on function public.reject_recharge_order_admin(uuid, text) from public;
+grant execute on function public.reject_recharge_order_admin(uuid, text) to authenticated;
 
 drop function if exists public.complete_paypal_recharge_order(text, text);
+drop function if exists public.complete_paypal_recharge_order(text, text, numeric);
 create or replace function public.complete_paypal_recharge_order(
   target_paypal_order_id text,
-  target_paypal_capture_id text
+  target_paypal_capture_id text,
+  target_exchange_rate numeric default 7.20
 )
 returns table (
   id uuid,
@@ -730,6 +1072,9 @@ returns table (
   paid_at timestamptz,
   paypal_order_id text,
   paypal_capture_id text,
+  amount_usd numeric,
+  amount_cny numeric,
+  exchange_rate numeric,
   new_balance numeric,
   already_paid boolean
 )
@@ -764,13 +1109,47 @@ begin
     raise exception 'Order is not a PayPal order';
   end if;
 
+  if target_order.amount_usd is null or target_order.amount_usd <= 0 then
+    if target_order.amount is null or target_order.amount <= 0 then
+      raise exception 'PayPal USD amount is missing';
+    end if;
+
+    target_order.amount_usd := target_order.amount;
+  end if;
+
+  if target_order.exchange_rate is null or target_order.exchange_rate <= 0 then
+    if target_exchange_rate is null or target_exchange_rate <= 0 then
+      raise exception 'PayPal exchange rate is missing';
+    end if;
+
+    target_order.exchange_rate := round(target_exchange_rate::numeric, 4);
+  end if;
+
+  if target_order.amount_cny is null or target_order.amount_cny <= 0 then
+    target_order.amount_cny := round((target_order.amount_usd * target_order.exchange_rate)::numeric, 2);
+  end if;
+
+  if target_order.amount_cny is null or target_order.amount_cny <= 0 then
+    raise exception 'PayPal CNY amount is missing';
+  end if;
+
   if target_order.status = 'paid' then
     was_already_paid := true;
   elsif target_order.status in ('failed', 'canceled', 'rejected') then
     raise exception 'Order cannot be captured';
   else
+    update public.orders
+    set
+      amount = target_order.amount_cny,
+      amount_usd = target_order.amount_usd,
+      amount_cny = target_order.amount_cny,
+      exchange_rate = target_order.exchange_rate,
+      payment_method = 'paypal'
+    where orders.id = target_order.id
+    returning * into target_order;
+
     update public.profiles
-    set balance = balance + target_order.amount
+    set balance = balance + target_order.amount_cny
     where profiles.id = target_order.user_id
     returning * into target_profile;
 
@@ -781,6 +1160,8 @@ begin
     update public.orders
     set
       status = 'paid',
+      amount = target_order.amount_cny,
+      payment_method = 'paypal',
       paid_at = now(),
       paypal_capture_id = btrim(target_paypal_capture_id)
     where orders.id = target_order.id
@@ -806,13 +1187,222 @@ begin
     target_order.paid_at,
     target_order.paypal_order_id,
     target_order.paypal_capture_id,
+    target_order.amount_usd,
+    target_order.amount_cny,
+    target_order.exchange_rate,
     target_profile.balance,
     was_already_paid;
 end;
 $$;
 
-revoke all on function public.complete_paypal_recharge_order(text, text) from public;
-grant execute on function public.complete_paypal_recharge_order(text, text) to service_role;
+revoke all on function public.complete_paypal_recharge_order(text, text, numeric) from public;
+grant execute on function public.complete_paypal_recharge_order(text, text, numeric) to service_role;
+
+drop function if exists public.complete_stripe_recharge_order(text, text, text, jsonb);
+create or replace function public.complete_stripe_recharge_order(
+  target_stripe_session_id text,
+  target_stripe_payment_intent_id text,
+  target_webhook_event_id text,
+  target_provider_response jsonb default '{}'::jsonb
+)
+returns table (
+  id uuid,
+  user_id uuid,
+  amount numeric,
+  method text,
+  status text,
+  note text,
+  created_at timestamptz,
+  paid_at timestamptz,
+  stripe_session_id text,
+  stripe_payment_intent_id text,
+  amount_usd numeric,
+  amount_cny numeric,
+  exchange_rate numeric,
+  currency text,
+  new_balance numeric,
+  already_paid boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_order public.orders%rowtype;
+  target_profile public.profiles%rowtype;
+  was_already_paid boolean := false;
+  normalized_session_id text := btrim(coalesce(target_stripe_session_id, ''));
+  normalized_payment_intent_id text := nullif(btrim(coalesce(target_stripe_payment_intent_id, '')), '');
+  normalized_webhook_event_id text := nullif(btrim(coalesce(target_webhook_event_id, '')), '');
+  response_payload jsonb := coalesce(target_provider_response, '{}'::jsonb);
+begin
+  if normalized_session_id = '' then
+    raise exception 'Stripe session id is required';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('stripe'), hashtext(normalized_session_id));
+
+  select *
+  into target_order
+  from public.orders
+  where orders.stripe_session_id = normalized_session_id
+  for update;
+
+  if target_order.id is null then
+    raise exception 'Order not found';
+  end if;
+
+  if coalesce(target_order.payment_method, target_order.method) <> 'stripe' then
+    raise exception 'Order is not a Stripe order';
+  end if;
+
+  if target_order.amount_usd is null or target_order.amount_usd <= 0 then
+    raise exception 'Stripe USD amount is missing';
+  end if;
+
+  if target_order.amount_cny is null or target_order.amount_cny <= 0 then
+    raise exception 'Stripe CNY amount is missing';
+  end if;
+
+  if target_order.exchange_rate is null or target_order.exchange_rate <= 0 then
+    raise exception 'Stripe exchange rate is missing';
+  end if;
+
+  if target_order.status = 'paid' then
+    was_already_paid := true;
+  elsif target_order.status in ('failed', 'rejected') then
+    raise exception 'Order cannot be captured';
+  else
+    update public.profiles
+    set balance = balance + target_order.amount_cny
+    where profiles.id = target_order.user_id
+    returning * into target_profile;
+
+    if target_profile.id is null then
+      raise exception 'User profile not found';
+    end if;
+
+    update public.orders
+    set
+      status = 'paid',
+      amount = target_order.amount_cny,
+      amount_usd = target_order.amount_usd,
+      amount_cny = target_order.amount_cny,
+      exchange_rate = target_order.exchange_rate,
+      currency = coalesce(target_order.currency, 'usd'),
+      payment_method = 'stripe',
+      paid_at = now(),
+      stripe_payment_intent_id = coalesce(normalized_payment_intent_id, target_order.stripe_payment_intent_id),
+      webhook_event_id = coalesce(normalized_webhook_event_id, target_order.webhook_event_id),
+      provider_response = response_payload
+    where orders.id = target_order.id
+    returning * into target_order;
+  end if;
+
+  if target_profile.id is null then
+    select *
+    into target_profile
+    from public.profiles
+    where profiles.id = target_order.user_id;
+  end if;
+
+  insert into public.recharge_records (
+    order_id,
+    user_id,
+    amount,
+    amount_usd,
+    amount_cny,
+    currency,
+    payment_method,
+    status,
+    provider_reference,
+    paid_at,
+    meta
+  )
+  values (
+    target_order.id,
+    target_order.user_id,
+    target_order.amount_cny,
+    target_order.amount_usd,
+    target_order.amount_cny,
+    coalesce(target_order.currency, 'usd'),
+    'stripe',
+    target_order.status,
+    target_order.stripe_session_id,
+    target_order.paid_at,
+    jsonb_build_object(
+      'stripe_session_id', target_order.stripe_session_id,
+      'stripe_payment_intent_id', target_order.stripe_payment_intent_id,
+      'webhook_event_id', target_order.webhook_event_id,
+      'exchange_rate', target_order.exchange_rate
+    )
+  )
+  on conflict (order_id) do update
+  set
+    amount = excluded.amount,
+    amount_usd = excluded.amount_usd,
+    amount_cny = excluded.amount_cny,
+    currency = excluded.currency,
+    payment_method = excluded.payment_method,
+    status = excluded.status,
+    provider_reference = excluded.provider_reference,
+    paid_at = excluded.paid_at,
+    meta = excluded.meta;
+
+  insert into public.payment_logs (
+    order_id,
+    user_id,
+    provider,
+    provider_event_id,
+    event_type,
+    status,
+    amount,
+    currency,
+    provider_response
+  )
+  values (
+    target_order.id,
+    target_order.user_id,
+    'stripe',
+    normalized_webhook_event_id,
+    'checkout.session.completed',
+    case when was_already_paid then 'already_paid' else 'paid' end,
+    target_order.amount_usd,
+    coalesce(target_order.currency, 'usd'),
+    response_payload
+  )
+  on conflict (provider_event_id) do update
+  set
+    order_id = excluded.order_id,
+    user_id = excluded.user_id,
+    status = excluded.status,
+    amount = excluded.amount,
+    currency = excluded.currency,
+    provider_response = excluded.provider_response;
+
+  return query
+  select
+    target_order.id,
+    target_order.user_id,
+    target_order.amount,
+    target_order.method,
+    target_order.status,
+    target_order.note,
+    target_order.created_at,
+    target_order.paid_at,
+    target_order.stripe_session_id,
+    target_order.stripe_payment_intent_id,
+    target_order.amount_usd,
+    target_order.amount_cny,
+    target_order.exchange_rate,
+    coalesce(target_order.currency, 'usd'),
+    target_profile.balance,
+    was_already_paid;
+end;
+$$;
+
+revoke all on function public.complete_stripe_recharge_order(text, text, text, jsonb) from public;
+grant execute on function public.complete_stripe_recharge_order(text, text, text, jsonb) to service_role;
 
 drop function if exists public.list_suppliers_admin();
 create or replace function public.list_suppliers_admin()
@@ -1061,8 +1651,8 @@ begin
   where id = target_user_id
   returning * into target_profile;
 
-  insert into public.orders (user_id, amount, method, status, note)
-  values (target_user_id, adjustment_amount, 'admin_adjust', 'paid', btrim(adjustment_note))
+  insert into public.orders (user_id, amount, method, payment_method, status, note, paid_at)
+  values (target_user_id, adjustment_amount, 'admin_adjust', 'manual', 'paid', btrim(adjustment_note), now())
   returning * into inserted_order;
 
   return query
@@ -1177,10 +1767,21 @@ returns table (
   id uuid,
   amount numeric,
   method text,
+  payment_method text,
   status text,
   note text,
+  review_note text,
   created_at timestamptz,
-  paid_at timestamptz
+  paid_at timestamptz,
+  reviewed_at timestamptz,
+  amount_usd numeric,
+  amount_cny numeric,
+  exchange_rate numeric,
+  paypal_order_id text,
+  paypal_capture_id text,
+  stripe_session_id text,
+  stripe_payment_intent_id text,
+  currency text
 )
 language plpgsql
 security definer
@@ -1201,10 +1802,27 @@ begin
     orders.id,
     orders.amount,
     orders.method,
+    coalesce(
+      orders.payment_method,
+      case
+        when orders.method = 'manual_transfer' then 'manual'
+        else orders.method
+      end
+    ),
     orders.status,
     orders.note,
+    orders.review_note,
     orders.created_at,
-    orders.paid_at
+    orders.paid_at,
+    orders.reviewed_at,
+    orders.amount_usd,
+    orders.amount_cny,
+    orders.exchange_rate,
+    orders.paypal_order_id,
+    orders.paypal_capture_id,
+    orders.stripe_session_id,
+    orders.stripe_payment_intent_id,
+    orders.currency
   from public.orders
   where orders.user_id = target_user_id
   order by orders.created_at desc
@@ -1222,7 +1840,12 @@ returns table (
   total_balance numeric,
   total_recharge_amount numeric,
   total_consumption_amount numeric,
+  today_recharge_amount numeric,
   today_consumption_amount numeric,
+  week_recharge_amount numeric,
+  week_consumption_amount numeric,
+  month_recharge_amount numeric,
+  month_consumption_amount numeric,
   today_call_count bigint,
   today_failed_count bigint,
   today_failure_rate numeric,
@@ -1243,6 +1866,8 @@ as $$
 declare
   range_start timestamptz;
   today_start timestamptz := date_trunc('day', now());
+  week_start timestamptz := date_trunc('week', now());
+  month_start timestamptz := date_trunc('month', now());
   has_cost_config boolean;
 begin
   if not exists (
@@ -1256,6 +1881,8 @@ begin
 
   range_start := case coalesce(range_filter, 'today')
     when 'today' then today_start
+    when 'week' then week_start
+    when 'month' then month_start
     when '7d' then now() - interval '7 days'
     when '30d' then now() - interval '30 days'
     else null
@@ -1301,6 +1928,16 @@ begin
     from public.usage_logs
     where created_at >= today_start
   ),
+  week_usage as (
+    select coalesce(sum(cost) filter (where status = 'success'), 0) as consumption_amount
+    from public.usage_logs
+    where created_at >= week_start
+  ),
+  month_usage as (
+    select coalesce(sum(cost) filter (where status = 'success'), 0) as consumption_amount
+    from public.usage_logs
+    where created_at >= month_start
+  ),
   range_usage as (
     select
       count(*) as call_count,
@@ -1316,6 +1953,27 @@ begin
     where amount > 0
       and (status = 'paid' or method in ('manual', 'admin_adjust'))
   ),
+  recharge_today as (
+    select coalesce(sum(amount), 0) as amount
+    from public.orders
+    where amount > 0
+      and (status = 'paid' or method in ('manual', 'admin_adjust'))
+      and created_at >= today_start
+  ),
+  recharge_week as (
+    select coalesce(sum(amount), 0) as amount
+    from public.orders
+    where amount > 0
+      and (status = 'paid' or method in ('manual', 'admin_adjust'))
+      and created_at >= week_start
+  ),
+  recharge_month as (
+    select coalesce(sum(amount), 0) as amount
+    from public.orders
+    where amount > 0
+      and (status = 'paid' or method in ('manual', 'admin_adjust'))
+      and created_at >= month_start
+  ),
   recharge_range as (
     select coalesce(sum(amount), 0) as amount
     from public.orders
@@ -1328,7 +1986,12 @@ begin
     (select coalesce(sum(balance), 0) from public.profiles),
     recharge_all.amount,
     all_usage.consumption_amount,
+    recharge_today.amount,
     today_usage.consumption_amount,
+    recharge_week.amount,
+    week_usage.consumption_amount,
+    recharge_month.amount,
+    month_usage.consumption_amount,
     today_usage.call_count::bigint,
     today_usage.failed_count::bigint,
     case
@@ -1347,7 +2010,7 @@ begin
     range_usage.failed_count::bigint,
     range_usage.consumption_amount,
     recharge_range.amount
-  from all_usage, today_usage, range_usage, recharge_all, recharge_range;
+  from all_usage, today_usage, week_usage, month_usage, range_usage, recharge_all, recharge_today, recharge_week, recharge_month, recharge_range;
 end;
 $$;
 
@@ -1388,6 +2051,8 @@ begin
 
   range_start := case coalesce(range_filter, '30d')
     when 'today' then date_trunc('day', now())
+    when 'week' then date_trunc('week', now())
+    when 'month' then date_trunc('month', now())
     when '7d' then now() - interval '7 days'
     when '30d' then now() - interval '30 days'
     else null
@@ -1400,10 +2065,17 @@ begin
     where range_start is null or created_at >= range_start
   ),
   filtered_orders as (
-    select *
+    select
+      orders.*,
+      coalesce(
+        orders.payment_method,
+        case
+          when orders.method = 'manual_transfer' then 'manual'
+          else orders.method
+        end
+      ) as normalized_payment_method
     from public.orders
     where amount > 0
-      and (status = 'paid' or method in ('manual', 'admin_adjust'))
       and (range_start is null or created_at >= range_start)
   ),
   top_spenders as (
@@ -1433,18 +2105,36 @@ begin
       profiles.email,
       null::text as model,
       null::text as supplier_name,
-      coalesce(sum(filtered_orders.amount), 0) as total_amount,
+      coalesce(sum(filtered_orders.amount) filter (where filtered_orders.status = 'paid' or filtered_orders.method in ('manual', 'admin_adjust')), 0) as total_amount,
       0::bigint as call_count,
       0::bigint as success_count,
       0::bigint as failed_count,
       0::bigint as token_count,
-      count(*)::bigint as order_count,
+      count(*) filter (where filtered_orders.status = 'paid' or filtered_orders.method in ('manual', 'admin_adjust'))::bigint as order_count,
       null::timestamptz as last_usage_at
     from filtered_orders
     left join public.profiles on profiles.id = filtered_orders.user_id
     group by profiles.email
     order by total_amount desc
     limit 10
+  ),
+  payment_method_stats as (
+    select
+      'payment_method_stats'::text as ranking_type,
+      coalesce(filtered_orders.normalized_payment_method, 'unknown') as label,
+      null::text as email,
+      null::text as model,
+      coalesce(filtered_orders.normalized_payment_method, 'unknown') as supplier_name,
+      coalesce(sum(filtered_orders.amount) filter (where filtered_orders.status = 'paid' or filtered_orders.method in ('manual', 'admin_adjust')), 0) as total_amount,
+      0::bigint as call_count,
+      count(*) filter (where filtered_orders.status = 'paid' or filtered_orders.method in ('manual', 'admin_adjust'))::bigint as success_count,
+      count(*) filter (where filtered_orders.status in ('rejected', 'failed', 'canceled'))::bigint as failed_count,
+      0::bigint as token_count,
+      count(*)::bigint as order_count,
+      max(filtered_orders.created_at) as last_usage_at
+    from filtered_orders
+    group by filtered_orders.normalized_payment_method
+    order by total_amount desc, order_count desc
   ),
   model_rankings as (
     select
@@ -1489,6 +2179,8 @@ begin
   union all
   select * from top_rechargers
   union all
+  select * from payment_method_stats
+  union all
   select * from model_rankings
   union all
   select * from supplier_rankings;
@@ -1505,9 +2197,14 @@ returns table (
   user_email text,
   amount numeric,
   method text,
+  payment_method text,
   status text,
   note text,
-  created_at timestamptz
+  review_note text,
+  created_at timestamptz,
+  amount_usd numeric,
+  amount_cny numeric,
+  exchange_rate numeric
 )
 language plpgsql
 security definer
@@ -1529,9 +2226,20 @@ begin
     profiles.email,
     orders.amount,
     orders.method,
+    coalesce(
+      orders.payment_method,
+      case
+        when orders.method = 'manual_transfer' then 'manual'
+        else orders.method
+      end
+    ),
     orders.status,
     orders.note,
-    orders.created_at
+    orders.review_note,
+    orders.created_at,
+    orders.amount_usd,
+    orders.amount_cny,
+    orders.exchange_rate
   from public.orders
   left join public.profiles on profiles.id = orders.user_id
   order by orders.created_at desc
@@ -1920,6 +2628,48 @@ using ((select auth.uid()) = user_id);
 drop policy if exists "Admins can read all orders" on public.orders;
 create policy "Admins can read all orders"
 on public.orders
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+);
+
+drop policy if exists "Users can read own recharge records" on public.recharge_records;
+create policy "Users can read own recharge records"
+on public.recharge_records
+for select
+to authenticated
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "Admins can read all recharge records" on public.recharge_records;
+create policy "Admins can read all recharge records"
+on public.recharge_records
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.profiles
+    where id = (select auth.uid())
+      and role = 'admin'
+  )
+);
+
+drop policy if exists "Users can read own payment logs" on public.payment_logs;
+create policy "Users can read own payment logs"
+on public.payment_logs
+for select
+to authenticated
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "Admins can read all payment logs" on public.payment_logs;
+create policy "Admins can read all payment logs"
+on public.payment_logs
 for select
 to authenticated
 using (

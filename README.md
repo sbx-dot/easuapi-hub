@@ -1,6 +1,6 @@
 # 电鳗 eelapi
 
-电鳗 eelapi is a Next.js demo for an AI API gateway dashboard. This version keeps the API Key, recharge, order, and playground features as local demos, and adds a first real login/register flow with Supabase Auth.
+电鳗 eelapi is a Next.js platform for AI API aggregation, API Key management, model access, usage records, recharge records, balance billing, and console operations.
 
 ## Current Scope
 
@@ -13,8 +13,8 @@
 - Model names and token prices are managed in the Supabase `models` table
 - Supplier routes are managed in the Supabase `suppliers` table
 - Admins can add, edit, enable, and disable models and suppliers from the dashboard
-- No real payment integration yet
-- No streaming relay yet
+- Stripe is retained as a pending payment option in the recharge center and is not enabled for checkout creation
+- Streaming relay is not enabled yet
 
 ## Supabase Setup
 
@@ -25,10 +25,10 @@
    - `Publishable key`
 4. Open `Authentication -> Providers -> Email`.
 5. Make sure Email auth is enabled.
-6. For the easiest first test, you can temporarily disable email confirmation. If you keep confirmation enabled, users must confirm the email before they can log in.
+6. For initial local verification, you can temporarily disable email confirmation. If you keep confirmation enabled, users must confirm the email before they can log in.
 7. Open `Authentication -> URL Configuration` and add your deployed Netlify domain to the allowed redirect URLs, for example:
-   - `https://your-site.netlify.app`
-   - `https://your-custom-domain.com`
+   - `https://eelapi.com`
+   - your approved production domain
 
 ## Environment Variables
 
@@ -41,6 +41,12 @@ SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
 UPSTREAM_API_KEY=optional-fallback-upstream-api-key
 UPSTREAM_DEFAULT_MODEL=deepseek-chat
 API_PRICE_PER_1K_TOKENS=0.01
+STRIPE_SECRET_KEY=
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=
+STRIPE_WEBHOOK_SECRET=
+NEXT_PUBLIC_APP_URL=https://eelapi.com
+STRIPE_SUCCESS_URL=
+STRIPE_CANCEL_URL=
 ```
 
 `NEXT_PUBLIC_SUPABASE_URL` must be the project base URL only. Do not include `/rest/v1`, `/auth/v1`, or any other path.
@@ -62,8 +68,11 @@ Required variables:
 - `UPSTREAM_API_KEY` if you want an environment fallback for suppliers without a saved key
 - `UPSTREAM_DEFAULT_MODEL`
 - `API_PRICE_PER_1K_TOKENS`
+- `NEXT_PUBLIC_APP_URL`
 
 After adding or changing environment variables in Netlify, redeploy the site.
+
+Stripe variables are reserved for future payment-channel approval. Keep them empty until Stripe recharge is approved and intentionally enabled.
 
 ## User Data Tables
 
@@ -72,6 +81,8 @@ Run the SQL in `supabase/user-data-schema.sql` inside the Supabase SQL Editor. I
 - `profiles`
 - `api_keys`
 - `orders`
+- `recharge_records`
+- `payment_logs`
 - `usage_logs`
 - `suppliers`
 - `models`
@@ -96,6 +107,12 @@ Default supplier inserted by the SQL:
 The admin recharge UI resolves the target user through `list_users_admin`, then uses the same `adjust_user_balance_admin` RPC as the user-management balance controls. Successful recharges create a paid `orders` record with `method = 'admin_adjust'`.
 Admins can also manage model prices in the dashboard. RLS allows normal users to read only enabled models, while admins can read all models and insert/update model rows.
 Admins can manage supplier routes in the dashboard. RLS prevents normal users from reading `suppliers`; admins can list suppliers through `list_suppliers_admin`, which returns only whether the API key is configured, not the full key.
+
+### Stripe Payment Status
+
+Stripe-related server routes and database fields are retained for future activation. The recharge center currently shows Stripe as under review and blocks checkout creation from the user interface. Users are directed to PayPal, WeChat, or Alipay while the Stripe channel remains pending.
+
+When Stripe is approved later, review the retained routes under `/api/payments/stripe`, configure the reserved environment variables, and run the full payment verification flow before enabling the Stripe entry in the recharge center.
 
 To make your own account an admin, run this in the Supabase SQL Editor after your account has signed up and has a `profiles` row:
 
@@ -199,9 +216,9 @@ Run the development server:
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000), click `打开控制台`, then register or log in with an email and password.
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000), click `打开控制台`, then register or log in with an email and password.
 
-## Production Test Checklist
+## Production Readiness Checklist
 
 1. Deploy the project to Netlify.
 2. Confirm the Netlify environment variables are set.

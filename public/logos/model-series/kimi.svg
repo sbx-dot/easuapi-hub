@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Kimi">
+  <rect width="48" height="48" rx="14" fill="#111827"/>
+  <circle cx="24" cy="24" r="14" fill="#fff"/>
+  <path fill="#111827" d="M25.5 12a12 12 0 1 0 0 24c-4-2.8-6.2-6.8-6.2-12s2.2-9.2 6.2-12Z"/>
+  <circle cx="28.8" cy="18.8" r="2.3" fill="#111827"/>
+</svg>

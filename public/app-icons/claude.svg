@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Claude model icon">
+  <g fill="none" stroke="#F97316" stroke-linecap="round" stroke-width="5">
+    <path d="M32 8v14"/>
+    <path d="M32 42v14"/>
+    <path d="M8 32h14"/>
+    <path d="M42 32h14"/>
+    <path d="m15 15 10 10"/>
+    <path d="m39 39 10 10"/>
+    <path d="m49 15-10 10"/>
+    <path d="m25 39-10 10"/>
+    <path d="m22 10 5 13"/>
+    <path d="m37 41 5 13"/>
+    <path d="m42 10-5 13"/>
+    <path d="m27 41-5 13"/>
+  </g>
+  <circle cx="32" cy="32" r="8.5" fill="#EA580C"/>
+</svg>

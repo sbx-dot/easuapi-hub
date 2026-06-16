@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48" role="img" aria-label="AI provider">
+  <g fill="none" stroke="#475569" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke-width="3" d="M28 9 45 19v19L28 45 11 35V16L28 9Z"/>
+    <path stroke-width="2.6" d="M28 9v17l17-7M28 26 11 16M28 26v19"/>
+    <circle cx="28" cy="26" r="4.5" fill="#E0F2FE" stroke="#2563EB" stroke-width="2.2"/>
+  </g>
+  <text x="58" y="30" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="760" letter-spacing="-.2">AI Provider</text>
+</svg>

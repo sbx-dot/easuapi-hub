@@ -28,13 +28,17 @@ type LocalOrderRow = {
   id: string;
   user_id: string;
   amount: number | string;
+  amount_usd: number | string | null;
+  amount_cny: number | string | null;
+  exchange_rate: number | string | null;
   method: string | null;
+  payment_method: string | null;
   status: string | null;
   paypal_order_id: string | null;
   paypal_capture_id: string | null;
 };
 
-const PAYPAL_NOTE = "PayPal Sandbox recharge";
+const PAYPAL_NOTE = "PayPal recharge";
 
 function jsonResponse(body: unknown, init?: ResponseInit) {
   return Response.json(body, init);
@@ -132,7 +136,61 @@ function readPositiveAmount(value: unknown) {
     return null;
   }
 
-  return Number(amount.toFixed(2));
+  const roundedAmount = Number(amount.toFixed(2));
+
+  if (roundedAmount !== amount) {
+    return null;
+  }
+
+  return roundedAmount;
+}
+
+export function readUsdToCnyRate() {
+  const rate = Number(process.env.USD_TO_CNY_RATE);
+
+  if (!Number.isFinite(rate) || rate <= 0) {
+    throw new Error("Invalid USD_TO_CNY_RATE");
+  }
+
+  return Number(rate.toFixed(4));
+}
+
+function convertUsdToCny(amountUsd: number, exchangeRate: number) {
+  return Number((amountUsd * exchangeRate).toFixed(2));
+}
+
+function resolvePayPalOrderAmounts(order: LocalOrderRow, fallbackExchangeRate: number) {
+  const amountUsd = Number(order.amount_usd ?? order.amount);
+  const exchangeRate = Number(order.exchange_rate ?? fallbackExchangeRate);
+  const amountCny = Number(order.amount_cny ?? convertUsdToCny(amountUsd, exchangeRate));
+
+  if (
+    !Number.isFinite(amountUsd) ||
+    amountUsd <= 0 ||
+    !Number.isFinite(exchangeRate) ||
+    exchangeRate <= 0 ||
+    !Number.isFinite(amountCny) ||
+    amountCny <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    amountUsd: Number(amountUsd.toFixed(2)),
+    amountCny: Number(amountCny.toFixed(2)),
+    exchangeRate: Number(exchangeRate.toFixed(4)),
+  };
+}
+
+export function estimateUsdToCny(amount: unknown) {
+  const amountUsd = readPositiveAmount(amount) ?? 0;
+  const exchangeRate = readUsdToCnyRate();
+
+  return {
+    amount_usd: amountUsd,
+    amount_cny: convertUsdToCny(amountUsd, exchangeRate),
+    exchange_rate: exchangeRate,
+  };
 }
 
 function formatUsdAmount(amount: number | string) {
@@ -196,25 +254,58 @@ export async function handleCreatePayPalOrder(request: Request) {
     return errorResponse("Invalid JSON request body", 400);
   }
 
-  const amount = readPositiveAmount(body.amount);
+  const amountUsd = readPositiveAmount(body.amount);
 
-  if (!amount) {
+  if (!amountUsd) {
     return errorResponse("amount must be greater than 0", 400);
   }
 
   const supabase = getSupabaseAdmin();
   const siteUrl = readSiteUrl(request);
-  const amountValue = formatUsdAmount(amount);
+  const exchangeRate = readUsdToCnyRate();
+  const amountCny = convertUsdToCny(amountUsd, exchangeRate);
+
+  if (amountCny > 50000) {
+    return errorResponse("amount must be no more than 50000 CNY", 400);
+  }
+
+  const amountValue = formatUsdAmount(amountUsd);
+  const { data: duplicateOrder, error: duplicateLookupError } = await supabase
+    .from("orders")
+    .select("id,paypal_order_id,status")
+    .eq("user_id", auth.userId)
+    .eq("method", "paypal")
+    .eq("status", "pending")
+    .eq("amount_usd", amountUsd)
+    .gte("created_at", new Date(Date.now() - 2 * 60 * 1000).toISOString())
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (duplicateLookupError) {
+    console.error("Failed to check duplicate PayPal order", duplicateLookupError);
+
+    return errorResponse("PayPal 订单创建前校验失败。", 500);
+  }
+
+  if (duplicateOrder) {
+    return errorResponse("同金额 PayPal 订单正在处理中，请稍后再试或返回订单记录确认到账。", 409, duplicateOrder);
+  }
+
   const { data: localOrder, error: insertError } = await supabase
     .from("orders")
     .insert({
       user_id: auth.userId,
-      amount,
+      amount: amountCny,
+      amount_usd: amountUsd,
+      amount_cny: amountCny,
+      exchange_rate: exchangeRate,
       status: "pending",
       method: "paypal",
+      payment_method: "paypal",
       note: PAYPAL_NOTE,
     })
-    .select("id,user_id,amount,method,status,paypal_order_id,paypal_capture_id")
+    .select("id,user_id,amount,amount_usd,amount_cny,exchange_rate,method,payment_method,status,paypal_order_id,paypal_capture_id")
     .single();
 
   if (insertError || !localOrder) {
@@ -266,6 +357,11 @@ export async function handleCreatePayPalOrder(request: Request) {
       .from("orders")
       .update({
         paypal_order_id: paypalOrderId,
+        amount: amountCny,
+        amount_usd: amountUsd,
+        amount_cny: amountCny,
+        exchange_rate: exchangeRate,
+        payment_method: "paypal",
       })
       .eq("id", order.id)
       .eq("user_id", auth.userId);
@@ -281,6 +377,9 @@ export async function handleCreatePayPalOrder(request: Request) {
       order_id: order.id,
       paypal_order_id: paypalOrderId,
       approve_url: approveUrl,
+      amount_usd: amountUsd,
+      amount_cny: amountCny,
+      exchange_rate: exchangeRate,
     });
   } catch (error) {
     await markOrderFailed(order.id);
@@ -307,7 +406,7 @@ export async function handleCapturePayPalOrder(request: Request) {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
     .from("orders")
-    .select("id,user_id,amount,method,status,paypal_order_id,paypal_capture_id")
+    .select("id,user_id,amount,amount_usd,amount_cny,exchange_rate,method,payment_method,status,paypal_order_id,paypal_capture_id")
     .eq("paypal_order_id", paypalOrderId)
     .maybeSingle();
 
@@ -321,7 +420,7 @@ export async function handleCapturePayPalOrder(request: Request) {
     return errorResponse("订单不存在。", 404);
   }
 
-  const order = data as LocalOrderRow;
+  let order = data as LocalOrderRow;
 
   if (order.user_id !== auth.userId) {
     return errorResponse("不能操作其他用户的订单。", 403);
@@ -346,6 +445,42 @@ export async function handleCapturePayPalOrder(request: Request) {
   }
 
   try {
+    const fallbackExchangeRate = readUsdToCnyRate();
+    const resolvedAmounts = resolvePayPalOrderAmounts(order, fallbackExchangeRate);
+
+    if (!resolvedAmounts) {
+      return errorResponse("PayPal 订单金额或汇率无效。", 400);
+    }
+
+    const shouldBackfillAmounts =
+      order.amount_usd == null ||
+      order.amount_cny == null ||
+      order.exchange_rate == null ||
+      Number(order.amount) !== resolvedAmounts.amountCny;
+
+    if (shouldBackfillAmounts) {
+      const { data: backfilledOrder, error: amountUpdateError } = await supabase
+        .from("orders")
+        .update({
+          amount: resolvedAmounts.amountCny,
+          amount_usd: resolvedAmounts.amountUsd,
+          amount_cny: resolvedAmounts.amountCny,
+          exchange_rate: resolvedAmounts.exchangeRate,
+        })
+        .eq("id", order.id)
+        .eq("user_id", auth.userId)
+        .neq("status", "paid")
+        .select("id,user_id,amount,amount_usd,amount_cny,exchange_rate,method,payment_method,status,paypal_order_id,paypal_capture_id")
+        .single();
+
+      if (amountUpdateError || !backfilledOrder) {
+        throw amountUpdateError ?? new Error("Failed to backfill PayPal order amounts");
+      }
+
+      order = backfilledOrder as LocalOrderRow;
+    }
+
+    const amountUsd = resolvedAmounts.amountUsd;
     const accessToken = await getPayPalAccessToken();
     const paypalResponse = await fetch(`${readPayPalBaseUrl()}/v2/checkout/orders/${encodeURIComponent(paypalOrderId)}/capture`, {
       method: "POST",
@@ -368,7 +503,7 @@ export async function handleCapturePayPalOrder(request: Request) {
     const captureId = capture?.id;
     const capturedCurrency = capture?.amount?.currency_code;
     const capturedAmount = capture?.amount?.value;
-    const expectedAmount = formatUsdAmount(order.amount);
+    const expectedAmount = formatUsdAmount(amountUsd);
     const capturedAmountNumber = Number(capturedAmount);
 
     if (
@@ -385,6 +520,7 @@ export async function handleCapturePayPalOrder(request: Request) {
     const { data: completedRows, error: completeError } = await supabase.rpc("complete_paypal_recharge_order", {
       target_paypal_order_id: paypalOrderId,
       target_paypal_capture_id: captureId,
+      target_exchange_rate: resolvedAmounts.exchangeRate,
     });
 
     if (completeError) {

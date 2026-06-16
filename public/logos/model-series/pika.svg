@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48" role="img" aria-label="Pika">
+  <defs><linearGradient id="pika-series-g" x1="12" x2="44" y1="8" y2="40" gradientUnits="userSpaceOnUse"><stop stop-color="#FDE047"/><stop offset="1" stop-color="#F59E0B"/></linearGradient></defs>
+  <path fill="url(#pika-series-g)" d="m29 7 5.5 12 13 1.5-9.7 8.6 2.6 12.7L29 35.3l-11.4 6.5 2.6-12.7-9.7-8.6 13-1.5L29 7Z"/>
+  <text x="58" y="32" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="27" font-weight="800" letter-spacing="-.55">Pika</text>
+</svg>

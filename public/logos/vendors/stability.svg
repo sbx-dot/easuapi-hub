@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48" role="img" aria-label="Stability AI">
+  <g fill="none" stroke="#111827" stroke-width="3.6" stroke-linecap="round">
+    <path d="M13 29c5.2-10.8 11.6-10.8 16.8 0s11.6 10.8 16.8 0"/>
+    <path d="M13 20c5.2 10.8 11.6 10.8 16.8 0s11.6-10.8 16.8 0"/>
+  </g>
+  <text x="58" y="30" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="760" letter-spacing="-.35">Stability</text>
+  <text x="134" y="30" fill="#4F46E5" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">AI</text>
+</svg>

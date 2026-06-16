@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48" role="img" aria-label="MiniMax">
+  <defs>
+    <linearGradient id="minimax-g" x1="10" x2="48" y1="10" y2="38" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EC4899"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#minimax-g)" d="M10 12h12l8 11 8-11h12v24h-8V22.7L32.8 36h-5.6L18 22.7V36h-8V12Z"/>
+  <text x="61" y="31" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="780" letter-spacing="-.35">MiniMax</text>
+</svg>

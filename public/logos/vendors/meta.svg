@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48" role="img" aria-label="Meta">
+  <path d="M13 30.5c5.8-12.6 10.2-17 15.1-17 4.1 0 7.3 2.9 11.4 9.8 4.1-6.9 7.3-9.8 11.4-9.8 4.9 0 9.3 4.4 15.1 17" fill="none" stroke="#0866FF" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M13 30.5c5.7-10 10.8-10 16 0 4.2 8 8.6 8 10.5 0 1.9 8 6.3 8 10.5 0 5.2-10 10.3-10 16 0" fill="none" stroke="#0866FF" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="82" y="31" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="750" letter-spacing="-.5">Meta</text>
+</svg>

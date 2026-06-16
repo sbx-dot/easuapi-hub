@@ -130,3 +130,352 @@
     @apply font-sans;
   }
 }
+
+:root {
+  color-scheme: dark;
+  --eel-bg: #05070d;
+  --eel-bg-raised: #0a0f1a;
+  --eel-surface: rgba(15, 23, 42, 0.68);
+  --eel-surface-strong: rgba(11, 18, 32, 0.9);
+  --eel-border: rgba(148, 163, 184, 0.16);
+  --eel-border-strong: rgba(34, 211, 238, 0.3);
+  --eel-text: #f8fafc;
+  --eel-muted: #94a3b8;
+  --eel-soft: #cbd5e1;
+  --eel-accent: #67e8f9;
+  --eel-accent-blue: #60a5fa;
+  --eel-success: #6ee7b7;
+}
+
+html {
+  scroll-padding-top: 88px;
+}
+
+body {
+  min-width: 320px;
+  background:
+    linear-gradient(180deg, #060914 0%, #05070d 44%, #05070d 100%);
+  color: var(--eel-text);
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(103, 232, 249, 0.28);
+  color: #ffffff;
+}
+
+.eel-marketing-shell {
+  min-height: 100vh;
+  color-scheme: light;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(59, 130, 246, 0.06), transparent 34%),
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 54%, #ffffff 100%);
+  color: #0f172a;
+}
+
+.eel-console-shell {
+  min-height: 100vh;
+  color-scheme: light;
+  background:
+    linear-gradient(rgba(37, 99, 235, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(37, 99, 235, 0.028) 1px, transparent 1px),
+    linear-gradient(180deg, #f8fbff 0%, #f8fafc 48%, #ffffff 100%);
+  background-size: 40px 40px, 40px 40px, auto;
+  color: #0f172a;
+}
+
+.eel-console-shell {
+  background:
+    radial-gradient(circle at 18% 0%, rgba(59, 130, 246, 0.08), transparent 30%),
+    radial-gradient(circle at 86% 8%, rgba(6, 182, 212, 0.08), transparent 28%),
+    linear-gradient(rgba(37, 99, 235, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(37, 99, 235, 0.024) 1px, transparent 1px),
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 56%, #ffffff 100%);
+  background-size: 36px 36px, 36px 36px, auto;
+}
+
+.eel-hero-stage {
+  position: relative;
+  overflow: hidden;
+  min-height: clamp(620px, 82vh, 820px);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background:
+    radial-gradient(circle at 50% 8%, rgba(37, 99, 235, 0.08), transparent 32%),
+    linear-gradient(180deg, #ffffff 0%, #fbfdff 68%, #ffffff 100%);
+}
+
+.eel-hero-image {
+  position: absolute;
+  inset: 72px -18vw auto 22vw;
+  height: min(74vh, 720px);
+  min-height: 480px;
+  opacity: 0.58;
+  transform: rotate(-2deg);
+  transform-origin: center;
+}
+
+.eel-hero-image img {
+  height: 100%;
+  width: 100%;
+  object-fit: contain;
+  object-position: center right;
+}
+
+.eel-hero-vignette {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, transparent 0%, transparent 62%, #05070d 100%),
+    linear-gradient(90deg, #05070d 0%, rgba(5, 7, 13, 0.88) 38%, rgba(5, 7, 13, 0.24) 100%);
+  pointer-events: none;
+}
+
+.eel-marketing-shell .eel-panel {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.06);
+}
+
+.eel-marketing-shell .eel-panel-soft {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.eel-marketing-shell input:not([type="checkbox"]):not([type="radio"]),
+.eel-marketing-shell textarea,
+.eel-marketing-shell select {
+  border-color: rgba(15, 23, 42, 0.12);
+  background-color: rgba(255, 255, 255, 0.88);
+  color: #0f172a;
+}
+
+.eel-marketing-shell input:not([type="checkbox"]):not([type="radio"]):focus,
+.eel-marketing-shell textarea:focus,
+.eel-marketing-shell select:focus {
+  border-color: rgba(37, 99, 235, 0.48);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+}
+
+.eel-marketing-shell .eel-button-primary {
+  background: #0f172a;
+  color: #ffffff;
+}
+
+.eel-marketing-shell .eel-button-primary:hover {
+  background: #1e293b;
+}
+
+.eel-marketing-shell .eel-button-subtle {
+  border-color: rgba(15, 23, 42, 0.12);
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.eel-marketing-shell .eel-button-subtle:hover {
+  border-color: rgba(37, 99, 235, 0.22);
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.eel-panel,
+.eel-console-shell [data-slot="card"] {
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.07);
+}
+
+.eel-panel-soft {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.eel-console-shell [data-slot="card"] {
+  overflow: hidden;
+}
+
+.eel-console-shell [data-slot="card-content"] {
+  position: relative;
+}
+
+.eel-console-shell input:not([type="checkbox"]):not([type="radio"]),
+.eel-console-shell textarea,
+.eel-console-shell select {
+  border-color: rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background-color: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.eel-console-shell input:not([type="checkbox"]):not([type="radio"]):focus,
+.eel-console-shell textarea:focus,
+.eel-console-shell select:focus {
+  border-color: rgba(37, 99, 235, 0.5);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.eel-console-shell button[data-slot="button"],
+.eel-marketing-shell button[data-slot="button"] {
+  border-radius: 8px;
+}
+
+.eel-console-shell .rounded-2xl,
+.eel-console-shell .rounded-3xl,
+.eel-marketing-shell .rounded-2xl,
+.eel-marketing-shell .rounded-3xl {
+  border-radius: 8px;
+}
+
+.eel-button-primary {
+  background: #0f172a;
+  color: #ffffff;
+}
+
+.eel-button-primary:hover {
+  background: #1e293b;
+}
+
+.eel-button-subtle {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+}
+
+.eel-button-subtle:hover {
+  border-color: rgba(37, 99, 235, 0.22);
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.eel-console-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.35rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 0 0.85rem;
+  color: #475569;
+  font-size: 0.875rem;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.eel-console-tab:hover {
+  border-color: rgba(37, 99, 235, 0.22);
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.eel-console-tab-active {
+  border-color: rgba(37, 99, 235, 0.3);
+  background: #eff6ff;
+  color: #1d4ed8;
+  box-shadow: inset 0 -1px 0 rgba(37, 99, 235, 0.16);
+}
+
+.eel-console-tab-accent {
+  border-color: rgba(37, 99, 235, 0.18);
+  color: #2563eb;
+}
+
+.eel-console-shell table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.eel-console-shell thead {
+  color: #64748b;
+}
+
+.eel-console-shell th {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.eel-console-shell tbody tr {
+  transition: background 140ms ease;
+}
+
+.eel-console-shell tbody tr:hover {
+  background: rgba(37, 99, 235, 0.04);
+}
+
+.eel-console-shell pre,
+.eel-marketing-shell pre {
+  border-radius: 8px;
+  border-color: rgba(15, 23, 42, 0.1);
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+.eel-console-shell [class*="bg-slate-950"],
+.eel-console-shell [class*="bg-slate-900"] {
+  background-color: rgba(248, 250, 252, 0.92) !important;
+}
+
+.eel-console-shell [class*="border-white"] {
+  border-color: rgba(15, 23, 42, 0.1) !important;
+}
+
+.eel-console-shell .text-white,
+.eel-console-shell .text-slate-50,
+.eel-console-shell .text-slate-100,
+.eel-console-shell .text-slate-200 {
+  color: #0f172a !important;
+}
+
+.eel-console-shell .text-slate-300,
+.eel-console-shell .text-slate-400,
+.eel-console-shell .text-slate-500 {
+  color: #64748b !important;
+}
+
+.eel-console-shell .text-cyan-100,
+.eel-console-shell .text-cyan-200,
+.eel-console-shell .text-cyan-300 {
+  color: #2563eb !important;
+}
+
+.eel-console-shell .text-emerald-100,
+.eel-console-shell .text-emerald-200,
+.eel-console-shell .text-emerald-300 {
+  color: #047857 !important;
+}
+
+.eel-console-shell .text-amber-100,
+.eel-console-shell .text-amber-200,
+.eel-console-shell .text-amber-300 {
+  color: #b45309 !important;
+}
+
+.eel-console-shell .text-rose-100,
+.eel-console-shell .text-rose-200,
+.eel-console-shell .text-rose-300 {
+  color: #be123c !important;
+}
+
+.eel-muted-text {
+  color: var(--eel-muted);
+}
+
+@media (max-width: 768px) {
+  .eel-hero-stage {
+    min-height: 720px;
+  }
+
+  .eel-hero-image {
+    inset: auto -42vw 24px -8vw;
+    height: 360px;
+    min-height: 0;
+    opacity: 0.34;
+  }
+
+  .eel-hero-vignette {
+    background:
+      linear-gradient(180deg, rgba(5, 7, 13, 0.28) 0%, rgba(5, 7, 13, 0.9) 54%, #05070d 100%),
+      linear-gradient(90deg, rgba(5, 7, 13, 0.94) 0%, rgba(5, 7, 13, 0.62) 100%);
+  }
+}
